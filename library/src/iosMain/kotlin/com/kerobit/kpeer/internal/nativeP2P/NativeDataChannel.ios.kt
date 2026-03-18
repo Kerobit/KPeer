@@ -87,6 +87,7 @@ internal actual class NativeDataChannel(
         dataChannel.close()
     }
 
+    @Suppress("REDUNDANT_ELSE_IN_WHEN")
     private fun mapState(state: RTCDataChannelState): DataChannelState = when (state) {
         RTCDataChannelState.RTCDataChannelStateConnecting -> DataChannelState.CONNECTING
         RTCDataChannelState.RTCDataChannelStateOpen -> DataChannelState.OPEN

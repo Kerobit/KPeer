@@ -1,5 +1,6 @@
 import com.android.build.api.dsl.androidLibrary
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFramework
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -10,6 +11,14 @@ plugins {
 
 group = "com.kerobit"
 version = "1.0.0"
+
+base {
+    archivesName.set("kpeer")
+}
+
+val jsModuleName = "kpeer"
+val cocoaPodName = "KerobitKPeer"
+val appleFrameworkName = "KerobitKPeer"
 
 kotlin {
     jvm()
@@ -37,13 +46,21 @@ kotlin {
     iosSimulatorArm64()
     linuxX64()
 
+    val xcf = XCFramework(appleFrameworkName)
+
     js(IR) {
-        browser()
+        outputModuleName.set(jsModuleName)
+        browser {
+            commonWebpackConfig {
+                outputFileName = "$jsModuleName.js"
+            }
+        }
+        binaries.library()
     }
 
     cocoapods {
         summary = "KPeer - simple WebRTC data channel peer for Kotlin Multiplatform"
-        name = "KPeer"
+        name = cocoaPodName
         homepage = "https://kerobit.com"
         version = "1.0.0"
         ios.deploymentTarget = "16.0"
@@ -52,14 +69,25 @@ kotlin {
             moduleName = "WebRTC"
         }
         framework {
-            baseName = "KPeer"
+            baseName = appleFrameworkName
+            isStatic = true
+        }
+    }
+
+    listOf(iosX64(), iosArm64(), iosSimulatorArm64()).forEach { target ->
+        target.binaries.framework {
+            baseName = appleFrameworkName
+            isStatic = true
+            xcf.add(this)
         }
     }
 
     targets.all {
         compilations.all {
-            compilerOptions.configure {
-                freeCompilerArgs.add("-Xexpect-actual-classes")
+            compileTaskProvider.configure {
+                compilerOptions {
+                    freeCompilerArgs.add("-Xexpect-actual-classes")
+                }
             }
         }
     }

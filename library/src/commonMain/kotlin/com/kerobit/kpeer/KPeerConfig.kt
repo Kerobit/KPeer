@@ -9,9 +9,7 @@ public data class IceServer(
     public val credential: String? = null
 )
 
-/**
- * Public configuration for KPeer (simple-peer style).
- */
+/** Public configuration for KPeer. */
 public data class KPeerConfig(
     public val initiator: Boolean,
     public val iceServers: List<IceServer> = defaultIceServers(),

@@ -8,6 +8,9 @@ import kotlin.js.Promise
 suspend fun <T> Promise<T>.await(): T = suspendCoroutine { cont ->
     then(
         onFulfilled = { cont.resume(it) },
-        onRejected = { err -> cont.resumeWithException(if (err is Throwable) err else Exception(err.toString())) }
+        onRejected = { err: Any? ->
+            val throwable = (err as? Throwable) ?: Exception(err?.toString() ?: "Promise rejected")
+            cont.resumeWithException(throwable)
+        }
     )
 }
