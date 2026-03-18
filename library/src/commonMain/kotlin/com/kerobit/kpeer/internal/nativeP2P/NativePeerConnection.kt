@@ -7,7 +7,6 @@ import kotlinx.coroutines.flow.Flow
 
 internal expect class NativePeerConnection(
     config: TransportConfig,
-    peerId: String,
     context: KPeerContext
 ) {
     val localIceCandidates: Flow<NativeIceCandidate>

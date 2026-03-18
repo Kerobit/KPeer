@@ -20,10 +20,9 @@ import kotlinx.coroutines.launch
 internal class KPeerConnection(
     context: KPeerContext,
     private val config: TransportConfig,
-    private val remotePeerId: String,
     private val logger: KPeerLogger
 ) {
-    private val nativePeerConnection = NativePeerConnection(config, remotePeerId, context)
+    private val nativePeerConnection = NativePeerConnection(config, context)
     private val scopeJob = SupervisorJob(context.scope.coroutineContext[Job])
     private val scope = CoroutineScope(context.scope.coroutineContext + scopeJob)
 

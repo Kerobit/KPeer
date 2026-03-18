@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 
+/** Configuration for a single WebRTC data channel. */
 public data class ChannelConfig(
     public val label: String,
     public val ordered: Boolean = true,
@@ -24,9 +25,11 @@ public enum class KChannelState {
     CLOSED
 }
 
+/** Data channel wrapper exposed by KPeer. */
 public interface KChannel {
     public val label: String
     public val state: Flow<KChannelState>
+    /** Emits binary payloads received on this channel only. */
     public val data: Flow<ByteArray>
 
     public fun send(data: ByteArray): Boolean
@@ -41,6 +44,7 @@ internal class KChannelImpl(
     private val _state = MutableStateFlow(KChannelState.CONNECTING)
 
     override val state: Flow<KChannelState> = _state
+    // Each KChannel projects the shared transport event stream down to its own label.
     override val data: Flow<ByteArray> = connection.events
         .filterIsInstance<KPeerTransportEvent.DataReceived>()
         .filter { it.label == label }

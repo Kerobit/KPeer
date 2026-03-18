@@ -3,7 +3,7 @@ package com.kerobit.kpeer
 import kotlinx.coroutines.CoroutineScope
 
 /**
- * Minimal context for KPeer transport (replaces SDK KeroContext).
+ * Minimal context for KPeer transport.
  * Provides a coroutine scope and optional platform context for WebRTC init (e.g. Android Context).
  */
 public data class KPeerContext(

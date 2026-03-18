@@ -12,7 +12,6 @@ import kotlin.js.json
 
 internal actual class NativePeerConnection actual constructor(
     config: TransportConfig,
-    peerId: String,
     context: KPeerContext
 ) {
     private val iceServers = config.iceServers.map { server ->

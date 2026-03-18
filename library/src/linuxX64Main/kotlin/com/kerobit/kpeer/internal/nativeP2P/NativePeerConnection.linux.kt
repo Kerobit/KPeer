@@ -8,7 +8,6 @@ import kotlinx.coroutines.flow.emptyFlow
 
 internal actual class NativePeerConnection actual constructor(
     config: TransportConfig,
-    peerId: String,
     context: KPeerContext
 ) {
     actual val localIceCandidates: Flow<NativeIceCandidate> = emptyFlow()

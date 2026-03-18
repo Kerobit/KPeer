@@ -33,7 +33,6 @@ private object PeerConnectionHolder {
 
 internal actual class NativePeerConnection actual constructor(
     config: TransportConfig,
-    peerId: String,
     context: KPeerContext
 ) {
     private val peerConnection: PeerConnection = run {
