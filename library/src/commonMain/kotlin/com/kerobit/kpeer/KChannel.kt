@@ -36,13 +36,19 @@ public interface KChannel {
 
     public fun send(bytes: ByteArray): Boolean
     public fun send(text: String): Boolean
+    /** Registers a callback for binary messages received on this channel. */
+    public fun onBytes(handler: (ByteArray) -> Unit): KSubscription
+    /** Registers a callback for text messages received on this channel. */
+    public fun onText(handler: (String) -> Unit): KSubscription
+    /** Registers a callback for channel state changes. */
+    public fun onState(handler: (KChannelState) -> Unit): KSubscription
     public fun close()
 }
 
 internal class KChannelImpl(
+    private val context: KPeerContext,
     override val label: String,
-    private val connection: KPeerConnection,
-    context: KPeerContext
+    private val connection: KPeerConnection
 ) : KChannel {
     private val _state = MutableStateFlow(KChannelState.CONNECTING)
 
@@ -78,6 +84,27 @@ internal class KChannelImpl(
     override fun send(bytes: ByteArray): Boolean = connection.sendRaw(label, bytes)
 
     override fun send(text: String): Boolean = connection.sendTextRaw(label, text)
+
+    override fun onBytes(handler: (ByteArray) -> Unit): KSubscription {
+        val job = context.scope.launch {
+            bytes.collect(handler)
+        }
+        return KSubscription { job.cancel() }
+    }
+
+    override fun onText(handler: (String) -> Unit): KSubscription {
+        val job = context.scope.launch {
+            text.collect(handler)
+        }
+        return KSubscription { job.cancel() }
+    }
+
+    override fun onState(handler: (KChannelState) -> Unit): KSubscription {
+        val job = context.scope.launch {
+            state.collect(handler)
+        }
+        return KSubscription { job.cancel() }
+    }
 
     override fun close() {
         _state.value = KChannelState.CLOSING

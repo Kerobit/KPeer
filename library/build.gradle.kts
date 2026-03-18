@@ -37,9 +37,9 @@ kotlin {
     iosSimulatorArm64()
     linuxX64()
 
-    // webJs(IR) {
-    //     browser()
-    // }
+    js(IR) {
+        browser()
+    }
 
     cocoapods {
         summary = "KPeer - simple WebRTC data channel peer for Kotlin Multiplatform"

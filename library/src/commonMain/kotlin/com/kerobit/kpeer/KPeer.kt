@@ -22,6 +22,12 @@ public interface KPeer {
     public suspend fun createChannel(config: ChannelConfig): KChannel?
     /** Applies a signaling message received from the remote peer. */
     public suspend fun signal(remote: KPeerSignal)
+    /** Registers a callback for outgoing signaling messages. */
+    public fun onSignal(handler: (KPeerSignal) -> Unit): KSubscription
+    /** Registers a callback for discovered channels. */
+    public fun onChannel(handler: (KChannel) -> Unit): KSubscription
+    /** Registers a callback for peer connection state changes. */
+    public fun onConnectionState(handler: (KPeerConnectionState) -> Unit): KSubscription
     /** Closes the peer connection but does not dispose caller-owned resources. */
     public fun close()
     /** Closes the peer connection and disposes internal resources owned by KPeer. */
@@ -87,9 +93,9 @@ internal class KPeerImpl(
     private fun getOrCreateChannel(label: String): KChannelImpl {
         return channelsByLabel.getOrPut(label) {
             KChannelImpl(
+                context = context,
                 label = label,
-                connection = connection,
-                context = context
+                connection = connection
             )
         }
     }
@@ -117,6 +123,27 @@ internal class KPeerImpl(
     }
 
     override suspend fun signal(remote: KPeerSignal) = signaler.handleSignal(remote)
+
+    override fun onSignal(handler: (KPeerSignal) -> Unit): KSubscription {
+        val job = context.scope.launch {
+            signals.collect(handler)
+        }
+        return KSubscription { job.cancel() }
+    }
+
+    override fun onChannel(handler: (KChannel) -> Unit): KSubscription {
+        val job = context.scope.launch {
+            channels.collect(handler)
+        }
+        return KSubscription { job.cancel() }
+    }
+
+    override fun onConnectionState(handler: (KPeerConnectionState) -> Unit): KSubscription {
+        val job = context.scope.launch {
+            connectionState.collect(handler)
+        }
+        return KSubscription { job.cancel() }
+    }
 
     override fun close() {
         connection.close()

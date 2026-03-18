@@ -44,6 +44,7 @@ external class RTCPeerConnection(config: RTCConfigurationInit?) {
     var onicecandidate: ((dynamic) -> Unit)?
     var oniceconnectionstatechange: (() -> Unit)?
     var ondatachannel: ((dynamic) -> Unit)?
+    var onnegotiationneeded: (() -> Unit)?
 }
 
 external class RTCDataChannel {
