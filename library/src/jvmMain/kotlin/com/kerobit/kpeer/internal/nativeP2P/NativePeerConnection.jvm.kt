@@ -15,6 +15,7 @@ internal actual class NativePeerConnection actual constructor(
     actual val connectionState: Flow<KPeerConnectionState> = emptyFlow()
     actual val currentConnectionState: KPeerConnectionState = KPeerConnectionState.DISCONNECTED
     actual val incomingDataChannels: Flow<NativeDataChannel> = emptyFlow()
+    actual val negotiationNeeded: Flow<Unit> = emptyFlow()
 
     actual fun createDataChannel(label: String, ordered: Boolean, reliable: Boolean): NativeDataChannel? = null
 

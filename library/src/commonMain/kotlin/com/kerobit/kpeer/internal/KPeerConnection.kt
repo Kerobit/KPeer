@@ -33,6 +33,7 @@ internal class KPeerConnection(
     val localIceCandidates: Flow<NativeIceCandidate> = nativePeerConnection.localIceCandidates
     val connectionState: Flow<KPeerConnectionState> = nativePeerConnection.connectionState
     val currentConnectionState: KPeerConnectionState get() = nativePeerConnection.currentConnectionState
+    val negotiationNeeded: Flow<Unit> = nativePeerConnection.negotiationNeeded
 
     private var started = false
     private val channelsByLabel = linkedMapOf<String, NativeDataChannel>()
@@ -99,22 +100,12 @@ internal class KPeerConnection(
         return channel.sendText(text)
     }
 
-    fun send(data: ByteArray): Boolean {
-        val channel0 = channelsByLabel.values.firstOrNull() ?: return false
-        return channel0.send(data)
-    }
-
-    fun send(text: String): Boolean {
-        val channel0 = channelsByLabel.values.firstOrNull() ?: return false
-        return channel0.sendText(text)
-    }
-
     fun getDataChannel(label: String): NativeDataChannel? = channelsByLabel[label]
 
     suspend fun createDataChannel(
         label: String,
-        ordered: Boolean = config.ordered,
-        reliable: Boolean = config.reliable
+        ordered: Boolean,
+        reliable: Boolean
     ): NativeDataChannel? {
         channelsByLabel[label]?.let { return it }
         val created = nativePeerConnection.createDataChannel(
@@ -126,6 +117,10 @@ internal class KPeerConnection(
             registerAndAttach(created)
         }
         return created
+    }
+
+    fun closeDataChannel(label: String) {
+        channelsByLabel[label]?.close()
     }
 
     suspend fun createOffer(): NativeSdp {

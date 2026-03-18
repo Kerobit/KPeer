@@ -14,6 +14,7 @@ internal expect class NativePeerConnection(
     val connectionState: Flow<KPeerConnectionState>
     val currentConnectionState: KPeerConnectionState
     val incomingDataChannels: Flow<NativeDataChannel>
+    val negotiationNeeded: Flow<Unit>
 
     suspend fun createOffer(): NativeSdp
     suspend fun createAnswer(): NativeSdp

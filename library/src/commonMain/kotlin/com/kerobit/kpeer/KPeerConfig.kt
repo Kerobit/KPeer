@@ -15,9 +15,6 @@ public data class IceServer(
 public data class KPeerConfig(
     public val initiator: Boolean,
     public val iceServers: List<IceServer> = defaultIceServers(),
-    public val channelName: String = "kero.data",
-    public val reliable: Boolean = true,
-    public val ordered: Boolean = true,
     public val trickleIce: Boolean = true
 ) {
     public companion object {

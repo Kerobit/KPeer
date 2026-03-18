@@ -81,6 +81,8 @@ internal actual class NativePeerConnection actual constructor(
 
     private val _incomingDataChannels = MutableSharedFlow<NativeDataChannel>(extraBufferCapacity = 8)
     actual val incomingDataChannels: Flow<NativeDataChannel> = _incomingDataChannels.asSharedFlow()
+    private val _negotiationNeeded = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+    actual val negotiationNeeded: Flow<Unit> = _negotiationNeeded.asSharedFlow()
 
     private val pendingIceCandidates = mutableListOf<RTCIceCandidate>()
     private var hasRemoteDescription = false
@@ -201,6 +203,10 @@ internal actual class NativePeerConnection actual constructor(
         _incomingDataChannels.tryEmit(native)
     }
 
+    internal fun onNegotiationNeeded() {
+        _negotiationNeeded.tryEmit(Unit)
+    }
+
     actual fun createDataChannel(label: String, ordered: Boolean, reliable: Boolean): NativeDataChannel? {
         val controlConfig = RTCDataChannelConfiguration().apply {
             isOrdered = ordered
@@ -251,7 +257,9 @@ private class PeerConnectionDelegate(
         didChangeSignalingState: RTCSignalingState
     ) {}
 
-    override fun peerConnectionShouldNegotiate(peerConnection: RTCPeerConnection) {}
+    override fun peerConnectionShouldNegotiate(peerConnection: RTCPeerConnection) {
+        owner.onNegotiationNeeded()
+    }
 
     @ObjCSignatureOverride
     override fun peerConnection(peerConnection: RTCPeerConnection, didRemoveStream: RTCMediaStream) {}

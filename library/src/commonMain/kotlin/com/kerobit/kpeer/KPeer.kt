@@ -9,24 +9,19 @@ import com.kerobit.kpeer.internal.nativeP2P.SdpType
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.filterIsInstance
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.launch
 
 /**
- * Simple-peer style API: signaling + data channel. No media, no protocol layer.
+ * Simple-peer style API: signaling + data channels. No media, no protocol layer.
  */
 public interface KPeer {
     public val connectionState: Flow<KPeerConnectionState>
-    public val data: Flow<ByteArray>
+    public val channels: Flow<KChannel>
     public val signals: Flow<KPeerSignal>
 
+    public suspend fun createChannel(config: ChannelConfig): KChannel?
     public suspend fun signal(remote: KPeerSignal)
-    public fun send(data: ByteArray): Boolean
     public fun close()
 }
 
@@ -46,11 +41,7 @@ internal class KPeerImpl(
 ) : KPeer {
 
     private val transportConfig = TransportConfig(
-        iceServers = config.iceServers,
-        controlChannelLabel = "data",
-        dataChannelLabel = config.channelName,
-        ordered = config.ordered,
-        reliable = config.reliable
+        iceServers = config.iceServers
     )
 
     private val connection = KPeerConnection(
@@ -62,17 +53,17 @@ internal class KPeerImpl(
 
     private val _signals = MutableSharedFlow<KPeerSignal>(extraBufferCapacity = 64)
     override val signals: Flow<KPeerSignal> = _signals.asSharedFlow()
+    private val _channels = MutableSharedFlow<KChannel>(extraBufferCapacity = 16)
+    override val channels: Flow<KChannel> = _channels.asSharedFlow()
 
     override val connectionState: Flow<KPeerConnectionState> = connection.connectionState
 
-    override val data: Flow<ByteArray> = connection.events
-        .filterIsInstance<KPeerTransportEvent.DataReceived>()
-        .filter { it.label == transportConfig.dataChannelLabel }
-        .map { it.data }
-        .shareIn(context.scope, SharingStarted.WhileSubscribed(), replay = 0)
-
     private var signalingJob: Job? = null
+    private var offerJob: Job? = null
     private var started = false
+    private var pendingOffer = false
+    private val channelsByLabel = linkedMapOf<String, KChannelImpl>()
+    private val emittedChannels = mutableSetOf<String>()
 
     init {
         context.scope.launch {
@@ -80,7 +71,15 @@ internal class KPeerImpl(
                 when (event) {
                     is KPeerTransportEvent.Connected -> {}
                     is KPeerTransportEvent.Disconnected, is KPeerTransportEvent.Failed -> {}
+                    is KPeerTransportEvent.DataChannelAvailable -> emitChannel(event.label)
                     else -> {}
+                }
+            }
+        }
+        context.scope.launch {
+            connection.negotiationNeeded.collect {
+                if (config.initiator) {
+                    requestOffer()
                 }
             }
         }
@@ -89,55 +88,91 @@ internal class KPeerImpl(
         }
     }
 
-    private fun startAsInitiator() {
+    private fun ensureStarted() {
         if (started) return
         started = true
         connection.startConnect()
-        context.scope.launch {
-            try {
-                val offer = connection.createOffer()
-                _signals.tryEmit(KPeerSignal.Offer(offer.description))
-            } catch (e: Exception) {
-                logger.warn("Failed to create offer: ${e.message}")
-            }
-        }
-        context.scope.launch {
-            connection.localIceCandidates.collect { c ->
-                _signals.tryEmit(
-                    KPeerSignal.IceCandidate(
-                        candidate = c.candidate,
-                        sdpMid = c.sdpMid,
-                        sdpMLineIndex = c.sdpMLineIndex
+        if (signalingJob == null) {
+            signalingJob = context.scope.launch {
+                connection.localIceCandidates.collect { c ->
+                    _signals.tryEmit(
+                        KPeerSignal.IceCandidate(
+                            candidate = c.candidate,
+                            sdpMid = c.sdpMid,
+                            sdpMLineIndex = c.sdpMLineIndex
+                        )
                     )
-                )
+                }
             }
         }
+    }
+
+    private fun startAsInitiator() {
+        ensureStarted()
+        requestOffer()
+    }
+
+    private fun requestOffer() {
+        if (!config.initiator) return
+        ensureStarted()
+        if (offerJob?.isActive == true) {
+            pendingOffer = true
+            return
+        }
+        offerJob = context.scope.launch {
+            do {
+                pendingOffer = false
+                try {
+                    val offer = connection.createOffer()
+                    _signals.tryEmit(KPeerSignal.Offer(offer.description))
+                } catch (e: Exception) {
+                    logger.warn("Failed to create offer: ${e.message}")
+                }
+            } while (pendingOffer)
+        }
+    }
+
+    private fun getOrCreateChannel(label: String): KChannelImpl {
+        return channelsByLabel.getOrPut(label) {
+            KChannelImpl(
+                label = label,
+                connection = connection,
+                context = context
+            )
+        }
+    }
+
+    private fun emitChannel(label: String) {
+        val channel = getOrCreateChannel(label)
+        if (emittedChannels.add(label)) {
+            _channels.tryEmit(channel)
+        }
+    }
+
+    override suspend fun createChannel(config: ChannelConfig): KChannel? {
+        if (this.config.initiator) {
+            ensureStarted()
+        }
+        val created = connection.createDataChannel(
+            label = config.label,
+            ordered = config.ordered,
+            reliable = config.reliable
+        ) ?: return null
+        val channel = getOrCreateChannel(created.label)
+        emitChannel(created.label)
+        return channel
     }
 
     override suspend fun signal(remote: KPeerSignal) {
         when (remote) {
             is KPeerSignal.Offer -> {
                 if (!config.initiator && !started) {
-                    started = true
-                    connection.startConnect()
+                    ensureStarted()
                 }
                 connection.setRemoteDescription(NativeSdp(SdpType.OFFER, remote.sdp))
                 if (!config.initiator) {
                     val answer = connection.createAnswer()
                     _signals.tryEmit(KPeerSignal.Answer(answer.description))
-                    if (signalingJob == null) {
-                        signalingJob = context.scope.launch {
-                            connection.localIceCandidates.collect { c ->
-                                _signals.tryEmit(
-                                    KPeerSignal.IceCandidate(
-                                        candidate = c.candidate,
-                                        sdpMid = c.sdpMid,
-                                        sdpMLineIndex = c.sdpMLineIndex
-                                    )
-                                )
-                            }
-                        }
-                    }
                 }
             }
             is KPeerSignal.Answer -> {
@@ -155,10 +190,9 @@ internal class KPeerImpl(
         }
     }
 
-    override fun send(data: ByteArray): Boolean = connection.send(data)
-
     override fun close() {
         connection.close()
         signalingJob?.cancel()
+        offerJob?.cancel()
     }
 }

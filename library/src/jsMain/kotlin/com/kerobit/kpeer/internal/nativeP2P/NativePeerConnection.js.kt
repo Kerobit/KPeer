@@ -38,6 +38,8 @@ internal actual class NativePeerConnection actual constructor(
 
     private val _incomingDataChannels = MutableSharedFlow<NativeDataChannel>(extraBufferCapacity = 8)
     actual val incomingDataChannels: Flow<NativeDataChannel> = _incomingDataChannels.asSharedFlow()
+    private val _negotiationNeeded = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+    actual val negotiationNeeded: Flow<Unit> = _negotiationNeeded.asSharedFlow()
 
     init {
         peerConnection.onicecandidate = { event ->
@@ -59,6 +61,9 @@ internal actual class NativePeerConnection actual constructor(
         peerConnection.ondatachannel = { event ->
             val ch = event.asDynamic().channel as RTCDataChannel
             _incomingDataChannels.tryEmit(NativeDataChannel(ch))
+        }
+        peerConnection.onnegotiationneeded = {
+            _negotiationNeeded.tryEmit(Unit)
         }
     }
 

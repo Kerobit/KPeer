@@ -69,7 +69,9 @@ internal actual class NativePeerConnection actual constructor(
             override fun onDataChannel(channel: DataChannel?) {
                 channel?.let { self?.onDataChannel(it) }
             }
-            override fun onRenegotiationNeeded() {}
+            override fun onRenegotiationNeeded() {
+                self?.onNegotiationNeeded()
+            }
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {}
         }
         val pc = factory.createPeerConnection(rtcConfig, observer)
@@ -89,6 +91,8 @@ internal actual class NativePeerConnection actual constructor(
 
     private val _incomingDataChannels = MutableSharedFlow<NativeDataChannel>(extraBufferCapacity = 8)
     actual val incomingDataChannels: Flow<NativeDataChannel> = _incomingDataChannels.asSharedFlow()
+    private val _negotiationNeeded = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+    actual val negotiationNeeded: Flow<Unit> = _negotiationNeeded.asSharedFlow()
 
     private val pendingIceCandidates = mutableListOf<IceCandidate>()
     private var hasRemoteDescription = false
@@ -211,6 +215,10 @@ internal actual class NativePeerConnection actual constructor(
     internal fun onDataChannel(channel: DataChannel) {
         val native = NativeDataChannel(channel)
         _incomingDataChannels.tryEmit(native)
+    }
+
+    internal fun onNegotiationNeeded() {
+        _negotiationNeeded.tryEmit(Unit)
     }
 
     actual fun createDataChannel(label: String, ordered: Boolean, reliable: Boolean): NativeDataChannel? {
