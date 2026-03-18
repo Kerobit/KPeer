@@ -2,8 +2,12 @@
 
 package com.kerobit.kpeer.internal.nativeP2P
 
+import com.kerobit.kpeer.ChannelConfig
 import com.kerobit.kpeer.KPeerConnectionState
 import com.kerobit.kpeer.KPeerContext
+import com.kerobit.kpeer.KPeerStat
+import com.kerobit.kpeer.KPeerStatValue
+import com.kerobit.kpeer.KPeerStatsReport
 import com.kerobit.kpeer.internal.TransportConfig
 import cocoapods.WebRTC_SDK.*
 import kotlinx.cinterop.BetaInteropApi
@@ -167,6 +171,20 @@ internal actual class NativePeerConnection actual constructor(
         }
     }
 
+    actual suspend fun getStats(): KPeerStatsReport = suspendCoroutine { cont ->
+        try {
+            peerConnection.statisticsWithCompletionHandler { report ->
+                if (report == null) {
+                    cont.resume(KPeerStatsReport(stats = emptyList()))
+                    return@statisticsWithCompletionHandler
+                }
+                cont.resume(report.toTyped())
+            }
+        } catch (e: Exception) {
+            cont.resumeWithException(e)
+        }
+    }
+
     actual fun close() {
         peerConnection.close()
         _connectionState.value = KPeerConnectionState.DISCONNECTED
@@ -206,15 +224,47 @@ internal actual class NativePeerConnection actual constructor(
         _negotiationNeeded.tryEmit(Unit)
     }
 
-    actual fun createDataChannel(label: String, ordered: Boolean, reliable: Boolean): NativeDataChannel? {
+    actual fun createDataChannel(config: ChannelConfig): NativeDataChannel? {
         val controlConfig = RTCDataChannelConfiguration().apply {
-            isOrdered = ordered
-            if (!reliable) {
+            isOrdered = config.ordered
+            if (!config.reliable) {
                 maxRetransmits = 0
             }
         }
-        return peerConnection.dataChannelForLabel(label, configuration = controlConfig)?.let { NativeDataChannel(it) }
+        return peerConnection.dataChannelForLabel(config.label, configuration = controlConfig)?.let { dc ->
+            config.bufferedAmountLowThreshold?.let { threshold ->
+                dc.bufferedAmountLowThreshold = threshold.toULong()
+            }
+            NativeDataChannel(dc)
+        }
     }
+}
+
+private fun RTCStatisticsReport.toTyped(): KPeerStatsReport {
+    val entries = statistics.values.mapNotNull { it as? RTCStatistics }
+    val stats = entries.map { stat ->
+        val rawValues = stat.values
+        val values = rawValues.entries.mapNotNull { (kAny, v) ->
+            val k = kAny?.toString() ?: return@mapNotNull null
+            k to toStatValue(v)
+        }.toMap()
+
+        KPeerStat(
+            id = stat.id,
+            type = stat.type,
+            timestampUs = stat.timestamp_us,
+            values = values
+        )
+    }
+    return KPeerStatsReport(stats = stats)
+}
+
+private fun toStatValue(v: Any?): KPeerStatValue = when (v) {
+    null -> KPeerStatValue.Null
+    is String -> KPeerStatValue.Str(v)
+    is Boolean -> KPeerStatValue.Bool(v)
+    is Number -> KPeerStatValue.Num(v.toDouble())
+    else -> KPeerStatValue.Str(v.toString())
 }
 
 private class PeerConnectionDelegate(

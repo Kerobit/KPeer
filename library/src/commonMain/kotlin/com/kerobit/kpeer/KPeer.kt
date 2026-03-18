@@ -18,6 +18,8 @@ public interface KPeer {
     /** Outgoing signaling messages that must be delivered to the remote peer. */
     public val signals: Flow<KPeerSignal>
 
+    /** Returns a typed snapshot of RTCPeerConnection stats (platform-dependent keys in values). */
+    public suspend fun getStats(): KPeerStatsReport
     /** Creates or returns a data channel attached to the current peer connection. */
     public suspend fun createChannel(config: ChannelConfig): KChannel?
     /** Applies a signaling message received from the remote peer. */
@@ -72,6 +74,8 @@ internal class KPeerImpl(
 
     override val connectionState: Flow<KPeerConnectionState> = connection.connectionState
 
+    override suspend fun getStats(): KPeerStatsReport = connection.getStats()
+
     private val channelsByLabel = linkedMapOf<String, KChannelImpl>()
     private val emittedChannels = mutableSetOf<String>()
 
@@ -112,11 +116,7 @@ internal class KPeerImpl(
         if (this.config.initiator) {
             signaler.ensureStarted()
         }
-        val created = connection.createDataChannel(
-            label = config.label,
-            ordered = config.ordered,
-            reliable = config.reliable
-        ) ?: return null
+        val created = connection.createDataChannel(config) ?: return null
         val channel = getOrCreateChannel(created.label)
         emitChannel(created.label)
         return channel

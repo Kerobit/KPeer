@@ -7,6 +7,8 @@ internal expect class NativeDataChannel {
     val incomingText: Flow<String>
     val state: Flow<DataChannelState>
     val currentState: DataChannelState
+    val bufferedAmount: Flow<Long>
+    val currentBufferedAmount: Long
     val label: String
     fun send(data: ByteArray): Boolean
     fun sendText(text: String): Boolean

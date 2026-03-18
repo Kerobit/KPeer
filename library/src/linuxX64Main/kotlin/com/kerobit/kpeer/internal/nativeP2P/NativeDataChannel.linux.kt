@@ -8,6 +8,8 @@ internal actual class NativeDataChannel {
     actual val incomingText: Flow<String> = emptyFlow()
     actual val state: Flow<DataChannelState> = emptyFlow()
     actual val currentState: DataChannelState = DataChannelState.CLOSED
+    actual val bufferedAmount: Flow<Long> = emptyFlow()
+    actual val currentBufferedAmount: Long = 0L
     actual val label: String = ""
 
     actual fun send(data: ByteArray): Boolean {

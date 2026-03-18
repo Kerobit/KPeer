@@ -30,6 +30,12 @@ internal actual class NativeDataChannel(
     actual val currentState: DataChannelState
         get() = _state.value
 
+    private val _bufferedAmount = MutableStateFlow(dataChannel.bufferedAmount.toLong())
+    actual val bufferedAmount: Flow<Long> = _bufferedAmount.asStateFlow()
+
+    actual val currentBufferedAmount: Long
+        get() = _bufferedAmount.value
+
     actual val label: String
         get() = dataChannel.label
 
@@ -53,11 +59,14 @@ internal actual class NativeDataChannel(
         override fun dataChannel(
             dataChannel: RTCDataChannel,
             didChangeBufferedAmount: ULong
-        ) {}
+        ) {
+            _bufferedAmount.value = didChangeBufferedAmount.toLong()
+        }
     }
 
     init {
         dataChannel.delegate = observer
+        _bufferedAmount.value = dataChannel.bufferedAmount.toLong()
     }
 
     actual fun send(data: ByteArray): Boolean {
@@ -65,7 +74,9 @@ internal actual class NativeDataChannel(
         return try {
             val nsData = data.toNSData()
             val buffer = RTCDataBuffer(data = nsData, isBinary = true)
-            dataChannel.sendData(buffer)
+            val ok = dataChannel.sendData(buffer)
+            _bufferedAmount.value = dataChannel.bufferedAmount.toLong()
+            ok
         } catch (e: Exception) {
             false
         }
@@ -77,7 +88,9 @@ internal actual class NativeDataChannel(
             val data = text.encodeToByteArray()
             val nsData = data.toNSData()
             val buffer = RTCDataBuffer(data = nsData, isBinary = false)
-            dataChannel.sendData(buffer)
+            val ok = dataChannel.sendData(buffer)
+            _bufferedAmount.value = dataChannel.bufferedAmount.toLong()
+            ok
         } catch (e: Exception) {
             false
         }

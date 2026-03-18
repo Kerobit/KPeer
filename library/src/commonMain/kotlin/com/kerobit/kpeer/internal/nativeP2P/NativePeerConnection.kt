@@ -2,6 +2,8 @@ package com.kerobit.kpeer.internal.nativeP2P
 
 import com.kerobit.kpeer.KPeerConnectionState
 import com.kerobit.kpeer.KPeerContext
+import com.kerobit.kpeer.KPeerStatsReport
+import com.kerobit.kpeer.ChannelConfig
 import com.kerobit.kpeer.internal.TransportConfig
 import kotlinx.coroutines.flow.Flow
 
@@ -19,6 +21,7 @@ internal expect class NativePeerConnection(
     suspend fun createAnswer(): NativeSdp
     suspend fun setRemoteDescription(sdp: NativeSdp)
     fun addIceCandidate(candidate: NativeIceCandidate)
+    suspend fun getStats(): KPeerStatsReport
     fun close()
-    fun createDataChannel(label: String, ordered: Boolean, reliable: Boolean): NativeDataChannel?
+    fun createDataChannel(config: ChannelConfig): NativeDataChannel?
 }

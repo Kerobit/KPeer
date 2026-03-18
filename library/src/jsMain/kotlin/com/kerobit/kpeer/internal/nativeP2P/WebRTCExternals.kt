@@ -38,6 +38,7 @@ external class RTCPeerConnection(config: RTCConfigurationInit?) {
     fun setLocalDescription(description: RTCSessionDescriptionInit): Promise<Unit>
     fun setRemoteDescription(description: RTCSessionDescriptionInit): Promise<Unit>
     fun addIceCandidate(candidate: RTCIceCandidateInit): Promise<Unit>
+    fun getStats(): Promise<dynamic>
     fun createDataChannel(label: String, options: RTCDataChannelInit? = definedExternally): RTCDataChannel
     fun close()
 
@@ -50,6 +51,8 @@ external class RTCPeerConnection(config: RTCConfigurationInit?) {
 external class RTCDataChannel {
     val label: String
     val readyState: String
+    val bufferedAmount: Int
+    var bufferedAmountLowThreshold: Int
     fun send(data: dynamic): Boolean
     fun close()
 
@@ -57,4 +60,5 @@ external class RTCDataChannel {
     var onopen: (() -> Unit)?
     var onclose: (() -> Unit)?
     var onclosing: (() -> Unit)?
+    var onbufferedamountlow: (() -> Unit)?
 }

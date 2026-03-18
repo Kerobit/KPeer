@@ -20,6 +20,12 @@ internal actual class NativeDataChannel(
     actual val currentState: DataChannelState
         get() = _state.value
 
+    private val _bufferedAmount = MutableStateFlow(channel.bufferedAmount.toLong())
+    actual val bufferedAmount: Flow<Long> = _bufferedAmount.asStateFlow()
+
+    actual val currentBufferedAmount: Long
+        get() = _bufferedAmount.value
+
     actual val label: String
         get() = channel.label
 
@@ -43,15 +49,21 @@ internal actual class NativeDataChannel(
                 else -> Unit
             }
         }
+        channel.onbufferedamountlow = {
+            _bufferedAmount.value = channel.bufferedAmount.toLong()
+        }
         if (channel.readyState == "open") {
             _state.value = DataChannelState.OPEN
         }
+        _bufferedAmount.value = channel.bufferedAmount.toLong()
     }
 
     actual fun send(data: ByteArray): Boolean {
         if (currentState != DataChannelState.OPEN) return false
         return try {
-            channel.send(data.unsafeCast<Any>())
+            val ok = channel.send(data.unsafeCast<Any>())
+            _bufferedAmount.value = channel.bufferedAmount.toLong()
+            ok
         } catch (e: Throwable) {
             false
         }
@@ -60,7 +72,9 @@ internal actual class NativeDataChannel(
     actual fun sendText(text: String): Boolean {
         if (currentState != DataChannelState.OPEN) return false
         return try {
-            channel.send(text)
+            val ok = channel.send(text)
+            _bufferedAmount.value = channel.bufferedAmount.toLong()
+            ok
         } catch (e: Throwable) {
             false
         }

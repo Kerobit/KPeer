@@ -2,6 +2,8 @@ package com.kerobit.kpeer.internal.nativeP2P
 
 import com.kerobit.kpeer.KPeerConnectionState
 import com.kerobit.kpeer.KPeerContext
+import com.kerobit.kpeer.KPeerStatsReport
+import com.kerobit.kpeer.ChannelConfig
 import com.kerobit.kpeer.internal.TransportConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -16,7 +18,7 @@ internal actual class NativePeerConnection actual constructor(
     actual val incomingDataChannels: Flow<NativeDataChannel> = emptyFlow()
     actual val negotiationNeeded: Flow<Unit> = emptyFlow()
 
-    actual fun createDataChannel(label: String, ordered: Boolean, reliable: Boolean): NativeDataChannel? = null
+    actual fun createDataChannel(config: ChannelConfig): NativeDataChannel? = null
 
     actual suspend fun createOffer(): NativeSdp {
         throw UnsupportedOperationException("P2P not supported on JVM")
@@ -31,6 +33,10 @@ internal actual class NativePeerConnection actual constructor(
     }
 
     actual fun addIceCandidate(candidate: NativeIceCandidate) {
+        throw UnsupportedOperationException("P2P not supported on JVM")
+    }
+
+    actual suspend fun getStats(): KPeerStatsReport {
         throw UnsupportedOperationException("P2P not supported on JVM")
     }
 

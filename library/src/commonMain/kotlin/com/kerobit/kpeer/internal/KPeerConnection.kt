@@ -3,6 +3,8 @@ package com.kerobit.kpeer.internal
 import com.kerobit.kpeer.KPeerConnectionState
 import com.kerobit.kpeer.KPeerContext
 import com.kerobit.kpeer.KPeerLogger
+import com.kerobit.kpeer.KPeerStatsReport
+import com.kerobit.kpeer.ChannelConfig
 import com.kerobit.kpeer.internal.nativeP2P.DataChannelState
 import com.kerobit.kpeer.internal.nativeP2P.NativeDataChannel
 import com.kerobit.kpeer.internal.nativeP2P.NativeIceCandidate
@@ -33,6 +35,8 @@ internal class KPeerConnection(
     val connectionState: Flow<KPeerConnectionState> = nativePeerConnection.connectionState
     val currentConnectionState: KPeerConnectionState get() = nativePeerConnection.currentConnectionState
     val negotiationNeeded: Flow<Unit> = nativePeerConnection.negotiationNeeded
+
+    suspend fun getStats(): KPeerStatsReport = nativePeerConnection.getStats()
 
     private var started = false
     private val channelsByLabel = linkedMapOf<String, NativeDataChannel>()
@@ -106,17 +110,9 @@ internal class KPeerConnection(
 
     fun getDataChannel(label: String): NativeDataChannel? = channelsByLabel[label]
 
-    suspend fun createDataChannel(
-        label: String,
-        ordered: Boolean,
-        reliable: Boolean
-    ): NativeDataChannel? {
-        channelsByLabel[label]?.let { return it }
-        val created = nativePeerConnection.createDataChannel(
-            label = label,
-            ordered = ordered,
-            reliable = reliable
-        )
+    suspend fun createDataChannel(config: ChannelConfig): NativeDataChannel? {
+        channelsByLabel[config.label]?.let { return it }
+        val created = nativePeerConnection.createDataChannel(config)
         if (created != null) {
             registerAndAttach(created)
         }

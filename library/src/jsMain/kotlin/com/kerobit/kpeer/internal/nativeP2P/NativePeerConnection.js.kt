@@ -1,7 +1,11 @@
 package com.kerobit.kpeer.internal.nativeP2P
 
+import com.kerobit.kpeer.ChannelConfig
 import com.kerobit.kpeer.KPeerConnectionState
 import com.kerobit.kpeer.KPeerContext
+import com.kerobit.kpeer.KPeerStat
+import com.kerobit.kpeer.KPeerStatValue
+import com.kerobit.kpeer.KPeerStatsReport
 import com.kerobit.kpeer.internal.TransportConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -102,17 +106,44 @@ internal actual class NativePeerConnection actual constructor(
         peerConnection.addIceCandidate(init)
     }
 
+    actual suspend fun getStats(): KPeerStatsReport {
+        val report = peerConnection.getStats().await()
+        // RTCStatsReport is a Map-like object in browsers.
+        val statsArray = js("Array.from(report.values())") as Array<dynamic>
+        val stats = statsArray.mapNotNull { s ->
+            val id = (s.id as? String) ?: return@mapNotNull null
+            val type = (s.type as? String) ?: return@mapNotNull null
+            val timestampUs = when (val t = s.timestamp) {
+                is Number -> (t.toDouble() * 1000.0).toLong() // JS timestamp is ms
+                else -> 0L
+            }
+
+            val keys = js("Object.keys(s)") as Array<String>
+            val values = buildMap<String, KPeerStatValue> {
+                for (k in keys) {
+                    if (k == "id" || k == "type" || k == "timestamp") continue
+                    put(k, jsToStatValue(s[k]))
+                }
+            }
+            KPeerStat(id = id, type = type, timestampUs = timestampUs, values = values)
+        }
+        return KPeerStatsReport(stats = stats)
+    }
+
     actual fun close() {
         peerConnection.close()
         _connectionState.value = KPeerConnectionState.DISCONNECTED
     }
 
-    actual fun createDataChannel(label: String, ordered: Boolean, reliable: Boolean): NativeDataChannel? {
+    actual fun createDataChannel(config: ChannelConfig): NativeDataChannel? {
         val options = json(
-            "ordered" to ordered,
-            "maxRetransmits" to (if (reliable) undefined else 0)
+            "ordered" to config.ordered,
+            "maxRetransmits" to (if (config.reliable) undefined else 0)
         ).unsafeCast<RTCDataChannelInit>()
-        val ch = peerConnection.createDataChannel(label, options)
+        val ch = peerConnection.createDataChannel(config.label, options)
+        config.bufferedAmountLowThreshold?.let { threshold ->
+            ch.bufferedAmountLowThreshold = threshold.toInt()
+        }
         return NativeDataChannel(ch)
     }
 
@@ -124,4 +155,12 @@ internal actual class NativePeerConnection actual constructor(
         "closed" -> KPeerConnectionState.DISCONNECTED
         else -> KPeerConnectionState.DISCONNECTED
     }
+}
+
+private fun jsToStatValue(v: dynamic): KPeerStatValue = when {
+    v == null || v == undefined -> KPeerStatValue.Null
+    jsTypeOf(v) == "string" -> KPeerStatValue.Str(v as String)
+    jsTypeOf(v) == "number" -> KPeerStatValue.Num((v as Number).toDouble())
+    jsTypeOf(v) == "boolean" -> KPeerStatValue.Bool(v as Boolean)
+    else -> KPeerStatValue.Str((js("String(v)") as String))
 }
