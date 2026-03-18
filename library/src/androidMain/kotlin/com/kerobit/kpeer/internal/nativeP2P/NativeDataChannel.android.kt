@@ -11,8 +11,10 @@ import java.nio.ByteBuffer
 internal actual class NativeDataChannel(
     private val dataChannel: DataChannel
 ) {
-    private val _incoming = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
-    actual val incoming: Flow<ByteArray> = _incoming.asSharedFlow()
+    private val _incomingBytes = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
+    actual val incomingBytes: Flow<ByteArray> = _incomingBytes.asSharedFlow()
+    private val _incomingText = MutableSharedFlow<String>(extraBufferCapacity = 64)
+    actual val incomingText: Flow<String> = _incomingText.asSharedFlow()
 
     private val _state = MutableStateFlow(mapState(dataChannel.state()))
     actual val state: Flow<DataChannelState> = _state.asStateFlow()
@@ -33,7 +35,11 @@ internal actual class NativeDataChannel(
                 buffer?.let {
                     val data = ByteArray(it.data.remaining())
                     it.data.get(data)
-                    _incoming.tryEmit(data)
+                    if (it.binary) {
+                        _incomingBytes.tryEmit(data)
+                    } else {
+                        _incomingText.tryEmit(data.decodeToString())
+                    }
                 }
             }
         })

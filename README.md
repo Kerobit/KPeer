@@ -23,12 +23,23 @@ Transport and signaling are intentionally separate. `KPeer` does not ship a sign
 ```kotlin
 val peer = KPeer(
     context = KPeerContext(
-        scope = scope,
         platformContext = androidContext // Android only
     ),
     config = KPeerConfig(
         initiator = true
     )
+)
+```
+
+If you already have an application scope, you can still pass it explicitly:
+
+```kotlin
+val peer = KPeer(
+    context = KPeerContext(
+        scope = scope,
+        platformContext = androidContext
+    ),
+    config = KPeerConfig(initiator = true)
 )
 ```
 
@@ -123,10 +134,26 @@ Receive bytes from one specific channel:
 
 ```kotlin
 scope.launch {
-    chatChannel?.data?.collect { bytes ->
+    chatChannel?.bytes?.collect { bytes ->
         println(bytes.decodeToString())
     }
 }
+```
+
+Receive text from one specific channel:
+
+```kotlin
+scope.launch {
+    chatChannel?.text?.collect { message ->
+        println(message)
+    }
+}
+```
+
+Send text through the channel:
+
+```kotlin
+chatChannel?.send("hello")
 ```
 
 Observe channel state:
@@ -165,9 +192,18 @@ Close the whole peer connection:
 peer.close()
 ```
 
+Dispose the peer and release the internally created scope:
+
+```kotlin
+peer.dispose()
+```
+
+`dispose()` only cancels the scope when that scope was created by `KPeerContext`.  
+If you passed your own scope into `KPeerContext`, ownership stays with your app.
+
 ## Notes
 
-- `KPeer` exchanges binary payloads only at the public API level
+- `KChannel` exposes separate streams for binary and text messages
 - signaling delivery ordering is still your responsibility
 - if both sides produce overlapping offers at the same time, there is no full perfect-negotiation strategy yet
 - JVM and Linux stubs are present, but WebRTC transport is implemented for the supported native platforms only

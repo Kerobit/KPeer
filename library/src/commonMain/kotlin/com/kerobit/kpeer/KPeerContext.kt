@@ -1,12 +1,28 @@
 package com.kerobit.kpeer
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 /**
  * Minimal context for KPeer transport.
- * Provides a coroutine scope and optional platform context for WebRTC init (e.g. Android Context).
+ * Provides an optional caller-owned scope and optional platform context for WebRTC init.
+ *
+ * When no scope is provided, KPeer creates an internal one that can later be disposed safely.
  */
-public data class KPeerContext(
-    public val scope: CoroutineScope,
+public class KPeerContext(
+    scope: CoroutineScope? = null,
     public val platformContext: Any? = null
-)
+) {
+    private val ownsScope: Boolean = scope == null
+
+    public val scope: CoroutineScope = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** Cancels only the internally created scope, never a scope supplied by the caller. */
+    public fun dispose() {
+        if (ownsScope) {
+            scope.cancel()
+        }
+    }
+}

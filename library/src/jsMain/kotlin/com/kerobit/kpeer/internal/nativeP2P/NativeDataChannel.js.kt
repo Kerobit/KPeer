@@ -9,8 +9,10 @@ import kotlinx.coroutines.flow.asStateFlow
 internal actual class NativeDataChannel(
     private val channel: RTCDataChannel
 ) {
-    private val _incoming = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
-    actual val incoming: Flow<ByteArray> = _incoming.asSharedFlow()
+    private val _incomingBytes = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
+    actual val incomingBytes: Flow<ByteArray> = _incomingBytes.asSharedFlow()
+    private val _incomingText = MutableSharedFlow<String>(extraBufferCapacity = 64)
+    actual val incomingText: Flow<String> = _incomingText.asSharedFlow()
 
     private val _state = MutableStateFlow(mapState(channel.readyState))
     actual val state: Flow<DataChannelState> = _state.asStateFlow()
@@ -33,14 +35,13 @@ internal actual class NativeDataChannel(
         }
         channel.onmessage = { event ->
             val data = event.asDynamic().data
-            val bytes: ByteArray = when {
+            when {
                 data != null && js("data instanceof ArrayBuffer") -> {
-                    js("new Int8Array(data)").unsafeCast<ByteArray>()
+                    _incomingBytes.tryEmit(js("new Int8Array(data)").unsafeCast<ByteArray>())
                 }
-                js("typeof data === 'string'") -> (data as String).encodeToByteArray()
-                else -> return@onmessage
+                js("typeof data === 'string'") -> _incomingText.tryEmit(data as String)
+                else -> Unit
             }
-            _incoming.tryEmit(bytes)
         }
         if (channel.readyState == "open") {
             _state.value = DataChannelState.OPEN

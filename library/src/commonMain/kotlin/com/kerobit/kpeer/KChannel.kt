@@ -30,9 +30,12 @@ public interface KChannel {
     public val label: String
     public val state: Flow<KChannelState>
     /** Emits binary payloads received on this channel only. */
-    public val data: Flow<ByteArray>
+    public val bytes: Flow<ByteArray>
+    /** Emits text payloads received on this channel only. */
+    public val text: Flow<String>
 
-    public fun send(data: ByteArray): Boolean
+    public fun send(bytes: ByteArray): Boolean
+    public fun send(text: String): Boolean
     public fun close()
 }
 
@@ -45,10 +48,15 @@ internal class KChannelImpl(
 
     override val state: Flow<KChannelState> = _state
     // Each KChannel projects the shared transport event stream down to its own label.
-    override val data: Flow<ByteArray> = connection.events
-        .filterIsInstance<KPeerTransportEvent.DataReceived>()
+    override val bytes: Flow<ByteArray> = connection.events
+        .filterIsInstance<KPeerTransportEvent.BytesReceived>()
         .filter { it.label == label }
         .map { it.data }
+        .shareIn(context.scope, SharingStarted.WhileSubscribed(), replay = 0)
+    override val text: Flow<String> = connection.events
+        .filterIsInstance<KPeerTransportEvent.TextReceived>()
+        .filter { it.label == label }
+        .map { it.text }
         .shareIn(context.scope, SharingStarted.WhileSubscribed(), replay = 0)
 
     init {
@@ -67,7 +75,9 @@ internal class KChannelImpl(
         }
     }
 
-    override fun send(data: ByteArray): Boolean = connection.sendRaw(label, data)
+    override fun send(bytes: ByteArray): Boolean = connection.sendRaw(label, bytes)
+
+    override fun send(text: String): Boolean = connection.sendTextRaw(label, text)
 
     override fun close() {
         _state.value = KChannelState.CLOSING

@@ -19,8 +19,10 @@ import platform.posix.memcpy
 internal actual class NativeDataChannel(
     private val dataChannel: RTCDataChannel
 ) {
-    private val _incoming = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
-    actual val incoming: Flow<ByteArray> = _incoming.asSharedFlow()
+    private val _incomingBytes = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
+    actual val incomingBytes: Flow<ByteArray> = _incomingBytes.asSharedFlow()
+    private val _incomingText = MutableSharedFlow<String>(extraBufferCapacity = 64)
+    actual val incomingText: Flow<String> = _incomingText.asSharedFlow()
 
     private val _state = MutableStateFlow(mapState(dataChannel.readyState))
     actual val state: Flow<DataChannelState> = _state.asStateFlow()
@@ -41,7 +43,11 @@ internal actual class NativeDataChannel(
             didReceiveMessageWithBuffer: RTCDataBuffer
         ) {
             val bytes = didReceiveMessageWithBuffer.data.toByteArray()
-            _incoming.tryEmit(bytes)
+            if (didReceiveMessageWithBuffer.isBinary) {
+                _incomingBytes.tryEmit(bytes)
+            } else {
+                _incomingText.tryEmit(bytes.decodeToString())
+            }
         }
 
         override fun dataChannel(

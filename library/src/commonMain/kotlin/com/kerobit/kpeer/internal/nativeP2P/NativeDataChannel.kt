@@ -3,7 +3,8 @@ package com.kerobit.kpeer.internal.nativeP2P
 import kotlinx.coroutines.flow.Flow
 
 internal expect class NativeDataChannel {
-    val incoming: Flow<ByteArray>
+    val incomingBytes: Flow<ByteArray>
+    val incomingText: Flow<String>
     val state: Flow<DataChannelState>
     val currentState: DataChannelState
     val label: String

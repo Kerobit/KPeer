@@ -83,8 +83,13 @@ internal class KPeerConnection(
             }
         }
         scope.launch {
-            channel.incoming.collect { data ->
-                _events.emit(KPeerTransportEvent.DataReceived(channel.label, data))
+            channel.incomingBytes.collect { data ->
+                _events.emit(KPeerTransportEvent.BytesReceived(channel.label, data))
+            }
+        }
+        scope.launch {
+            channel.incomingText.collect { text ->
+                _events.emit(KPeerTransportEvent.TextReceived(channel.label, text))
             }
         }
     }
@@ -143,5 +148,6 @@ internal sealed class KPeerTransportEvent {
     data class DataChannelAvailable(val label: String) : KPeerTransportEvent()
     data class DataChannelOpen(val label: String) : KPeerTransportEvent()
     data class DataChannelClosed(val label: String) : KPeerTransportEvent()
-    data class DataReceived(val label: String, val data: ByteArray) : KPeerTransportEvent()
+    data class BytesReceived(val label: String, val data: ByteArray) : KPeerTransportEvent()
+    data class TextReceived(val label: String, val text: String) : KPeerTransportEvent()
 }

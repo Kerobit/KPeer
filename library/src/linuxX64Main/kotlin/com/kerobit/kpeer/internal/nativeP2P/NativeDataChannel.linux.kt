@@ -4,7 +4,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 
 internal actual class NativeDataChannel {
-    actual val incoming: Flow<ByteArray> = emptyFlow()
+    actual val incomingBytes: Flow<ByteArray> = emptyFlow()
+    actual val incomingText: Flow<String> = emptyFlow()
     actual val state: Flow<DataChannelState> = emptyFlow()
     actual val currentState: DataChannelState = DataChannelState.CLOSED
     actual val label: String = ""

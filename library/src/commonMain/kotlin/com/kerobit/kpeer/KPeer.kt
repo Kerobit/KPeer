@@ -22,7 +22,10 @@ public interface KPeer {
     public suspend fun createChannel(config: ChannelConfig): KChannel?
     /** Applies a signaling message received from the remote peer. */
     public suspend fun signal(remote: KPeerSignal)
+    /** Closes the peer connection but does not dispose caller-owned resources. */
     public fun close()
+    /** Closes the peer connection and disposes internal resources owned by KPeer. */
+    public fun dispose()
 }
 
 /**
@@ -118,5 +121,10 @@ internal class KPeerImpl(
     override fun close() {
         connection.close()
         signaler.close()
+    }
+
+    override fun dispose() {
+        close()
+        context.dispose()
     }
 }
