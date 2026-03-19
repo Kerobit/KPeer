@@ -7,11 +7,14 @@ import com.kerobit.kpeer.KPeerStat
 import com.kerobit.kpeer.KPeerStatValue
 import com.kerobit.kpeer.KPeerStatsReport
 import com.kerobit.kpeer.internal.TransportConfig
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.channels.trySend
 import kotlin.js.json
 
 internal actual class NativePeerConnection actual constructor(
@@ -30,8 +33,8 @@ internal actual class NativePeerConnection actual constructor(
 
     private val peerConnection = RTCPeerConnection(rtcConfig)
 
-    private val _localIceCandidates = MutableSharedFlow<NativeIceCandidate>(extraBufferCapacity = 64)
-    actual val localIceCandidates: Flow<NativeIceCandidate> = _localIceCandidates.asSharedFlow()
+    private val localIceCandidatesChannel = Channel<NativeIceCandidate>(Channel.UNLIMITED)
+    actual val localIceCandidates: Flow<NativeIceCandidate> = localIceCandidatesChannel.receiveAsFlow()
 
     private val _connectionState = MutableStateFlow(KPeerConnectionState.CONNECTING)
     actual val connectionState: Flow<KPeerConnectionState> = _connectionState.asStateFlow()
@@ -46,9 +49,9 @@ internal actual class NativePeerConnection actual constructor(
 
     init {
         peerConnection.onicecandidate = { event ->
-            val c = event.asDynamic().candidate
+            val c = event.candidate
             if (c != null && c != undefined) {
-                _localIceCandidates.tryEmit(
+                localIceCandidatesChannel.trySend(
                     NativeIceCandidate(
                         sdpMid = c.sdpMid,
                         sdpMLineIndex = c.sdpMLineIndex ?: 0,
@@ -58,11 +61,10 @@ internal actual class NativePeerConnection actual constructor(
             }
         }
         peerConnection.oniceconnectionstatechange = {
-            val pc = peerConnection.asDynamic()
-            _connectionState.value = mapConnectionState(pc.iceConnectionState as String)
+            _connectionState.value = mapConnectionState(peerConnection.asDynamic().iceConnectionState as String)
         }
         peerConnection.ondatachannel = { event ->
-            val ch = event.asDynamic().channel as RTCDataChannel
+            val ch = event.channel as RTCDataChannel
             _incomingDataChannels.tryEmit(NativeDataChannel(ch))
         }
         peerConnection.onnegotiationneeded = {
@@ -93,16 +95,19 @@ internal actual class NativePeerConnection actual constructor(
             SdpType.OFFER -> "offer"
             SdpType.ANSWER -> "answer"
         }
-        val desc = RTCSessionDescriptionInit(type = type, sdp = sdp.description)
+        val desc = js("({})").unsafeCast<RTCSessionDescriptionInit>().apply {
+            this.type = type
+            this.sdp = sdp.description
+        }
         peerConnection.setRemoteDescription(desc).await()
     }
 
     actual fun addIceCandidate(candidate: NativeIceCandidate) {
-        val init = RTCIceCandidateInit(
-            candidate = candidate.candidate,
-            sdpMid = candidate.sdpMid,
-            sdpMLineIndex = candidate.sdpMLineIndex
-        )
+        val init = js("({})").unsafeCast<RTCIceCandidateInit>().apply {
+            this.candidate = candidate.candidate
+            this.sdpMid = candidate.sdpMid
+            this.sdpMLineIndex = candidate.sdpMLineIndex
+        }
         peerConnection.addIceCandidate(init)
     }
 
@@ -132,6 +137,7 @@ internal actual class NativePeerConnection actual constructor(
 
     actual fun close() {
         peerConnection.close()
+        localIceCandidatesChannel.close()
         _connectionState.value = KPeerConnectionState.DISCONNECTED
     }
 

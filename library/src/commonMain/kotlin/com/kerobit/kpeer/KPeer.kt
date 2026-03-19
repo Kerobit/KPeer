@@ -112,10 +112,20 @@ internal class KPeerImpl(
     }
 
     override suspend fun createChannel(config: ChannelConfig): KChannel? {
-        // The initiator must have an active PeerConnection before creating the first channel.
-        if (this.config.initiator) {
-            signaler.ensureStarted()
+        // simple-peer semantics: only the initiator creates data channels.
+        // The answering side must wait for the remote-created channel via ondatachannel/onChannel.
+        if (!this.config.initiator) {
+            // If the channel already exists (remote side created it), return it.
+            connection.getDataChannel(config.label)?.let {
+                val existing = getOrCreateChannel(it.label)
+                emitChannel(it.label)
+                return existing
+            }
+            logger.warn("createChannel(label=${config.label}) ignored on non-initiator; wait for onChannel instead.")
+            return null
         }
+
+        signaler.ensureStarted()
         val created = connection.createDataChannel(config) ?: return null
         val channel = getOrCreateChannel(created.label)
         emitChannel(created.label)

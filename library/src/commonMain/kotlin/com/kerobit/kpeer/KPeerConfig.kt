@@ -13,7 +13,7 @@ public data class IceServer(
 public data class KPeerConfig(
     public val initiator: Boolean,
     public val iceServers: List<IceServer> = defaultIceServers(),
-    public val trickleIce: Boolean = true
+    public val signaling: SignalingConfig = SignalingConfig()
 ) {
     public companion object {
         public fun defaultIceServers(): List<IceServer> = listOf(

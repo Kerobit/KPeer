@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.channels.Channel
 import platform.darwin.NSObject
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -73,8 +75,8 @@ internal actual class NativePeerConnection actual constructor(
         ) ?: throw IllegalStateException("Failed to create RTCPeerConnection")
     }
 
-    private val _localIceCandidates = MutableSharedFlow<NativeIceCandidate>(extraBufferCapacity = 64)
-    actual val localIceCandidates: Flow<NativeIceCandidate> = _localIceCandidates.asSharedFlow()
+    private val localIceCandidatesChannel = Channel<NativeIceCandidate>(Channel.UNLIMITED)
+    actual val localIceCandidates: Flow<NativeIceCandidate> = localIceCandidatesChannel.receiveAsFlow()
 
     private val _connectionState = MutableStateFlow(KPeerConnectionState.CONNECTING)
     actual val connectionState: Flow<KPeerConnectionState> = _connectionState.asStateFlow()
@@ -187,6 +189,7 @@ internal actual class NativePeerConnection actual constructor(
 
     actual fun close() {
         peerConnection.close()
+        localIceCandidatesChannel.close()
         _connectionState.value = KPeerConnectionState.DISCONNECTED
     }
 
@@ -196,7 +199,7 @@ internal actual class NativePeerConnection actual constructor(
             sdpMLineIndex = candidate.sdpMLineIndex,
             candidate = candidate.sdp
         )
-        _localIceCandidates.tryEmit(nativeCandidate)
+        localIceCandidatesChannel.trySend(nativeCandidate)
     }
 
     internal fun onIceGatheringComplete() {}
@@ -232,9 +235,8 @@ internal actual class NativePeerConnection actual constructor(
             }
         }
         return peerConnection.dataChannelForLabel(config.label, configuration = controlConfig)?.let { dc ->
-            config.bufferedAmountLowThreshold?.let { threshold ->
-                dc.bufferedAmountLowThreshold = threshold.toULong()
-            }
+            // iOS support for bufferedAmountLowThreshold varies by WebRTC build.
+            // If the property is not available, the threshold is ignored.
             NativeDataChannel(dc)
         }
     }
@@ -252,7 +254,7 @@ private fun RTCStatisticsReport.toTyped(): KPeerStatsReport {
         KPeerStat(
             id = stat.id,
             type = stat.type,
-            timestampUs = stat.timestamp_us,
+            timestampUs = stat.timestamp_us.toLong(),
             values = values
         )
     }

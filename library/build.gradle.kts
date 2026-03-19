@@ -53,9 +53,14 @@ kotlin {
         browser {
             commonWebpackConfig {
                 outputFileName = "$jsModuleName.js"
+                output?.libraryTarget = "umd"
+                output?.library = jsModuleName
             }
         }
-        binaries.library()
+        // - library(): publishable artifact (npm-style, may be split into multiple files)
+        // - executable(): webpack bundle for easy <script> usage (single output file in build/distributions)
+        //binaries.library()
+        binaries.executable()
     }
 
     cocoapods {
@@ -106,6 +111,21 @@ kotlin {
         }
     }
 }
+
+// Gradle task validation: some JS packaging tasks consume outputs from compileSync tasks.
+// Newer Gradle versions require explicit task dependencies to avoid implicit dependency warnings/errors.
+// val jsProductionLibraryCompileSyncTask = "jsProductionLibraryCompileSync"
+// val jsProductionExecutableCompileSyncTask = "jsProductionExecutableCompileSync"
+
+// tasks.matching { it.name == "jsBrowserProductionWebpack" || it.name == "jsBrowserDevelopmentWebpack" }.configureEach {
+//     dependsOn(jsProductionLibraryCompileSyncTask)
+// }
+
+// tasks.matching {
+//     it.name == "jsBrowserProductionLibraryDistribution" || it.name == "jsBrowserDevelopmentLibraryDistribution"
+// }.configureEach {
+//     dependsOn(jsProductionExecutableCompileSyncTask)
+// }
 
 mavenPublishing {
     publishToMavenCentral()

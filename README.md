@@ -164,6 +164,27 @@ Supported signaling payloads are:
 - `KPeerSignal.Answer`
 - `KPeerSignal.IceCandidate`
 
+### ICE batching (outgoing) and buffering (incoming)
+
+`KPeer` can reduce the burst of `KPeerSignal.IceCandidate` messages by batching *outgoing* local ICE candidates.
+It also can buffer *incoming* remote ICE candidates until the remote description is set (which makes delivery order less important).
+
+Configure it via `KPeerConfig.signaling`:
+
+```kotlin
+val peer = KPeer(
+    context = KPeerContext(scope = scope, platformContext = androidContext),
+    config = KPeerConfig(
+        initiator = true,
+        signaling = SignalingConfig(
+            flushInterval = 50L,          // ms (0 disables batching)
+            maxBatchSize = null,         // per-batch limit
+            bufferRemoteIceUntilDescription = true
+        )
+    )
+)
+```
+
 ### Signaling with Flow
 
 This sample wires two peers together locally using the `signals` flow:

@@ -16,16 +16,18 @@ external interface RTCConfigurationInit {
     var iceServers: Array<RTCIceServerInit>?
 }
 
-external open class RTCSessionDescriptionInit(
-    var type: String,
+// WebRTC "dictionary" types are not constructors in browsers.
+// Represent them as interfaces and create values via object literals.
+external interface RTCSessionDescriptionInit {
+    var type: String
     var sdp: String
-)
+}
 
-external open class RTCIceCandidateInit(
-    var candidate: String,
-    var sdpMid: String?,
+external interface RTCIceCandidateInit {
+    var candidate: String
+    var sdpMid: String?
     var sdpMLineIndex: Int?
-)
+}
 
 external interface RTCDataChannelInit {
     var ordered: Boolean?
@@ -53,7 +55,7 @@ external class RTCDataChannel {
     val readyState: String
     val bufferedAmount: Int
     var bufferedAmountLowThreshold: Int
-    fun send(data: dynamic): Boolean
+    fun send(data: dynamic)
     fun close()
 
     var onmessage: ((dynamic) -> Unit)?

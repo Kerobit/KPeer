@@ -8,11 +8,13 @@ import com.kerobit.kpeer.KPeerStat
 import com.kerobit.kpeer.KPeerStatValue
 import com.kerobit.kpeer.KPeerStatsReport
 import com.kerobit.kpeer.internal.TransportConfig
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import org.webrtc.*
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -83,8 +85,8 @@ internal actual class NativePeerConnection actual constructor(
         pc
     }
 
-    private val _localIceCandidates = MutableSharedFlow<NativeIceCandidate>(extraBufferCapacity = 64)
-    actual val localIceCandidates: Flow<NativeIceCandidate> = _localIceCandidates.asSharedFlow()
+    private val localIceCandidatesChannel = Channel<NativeIceCandidate>(Channel.UNLIMITED)
+    actual val localIceCandidates: Flow<NativeIceCandidate> = localIceCandidatesChannel.receiveAsFlow()
 
     private val _connectionState = MutableStateFlow(KPeerConnectionState.CONNECTING)
     actual val connectionState: Flow<KPeerConnectionState> = _connectionState.asStateFlow()
@@ -200,6 +202,7 @@ internal actual class NativePeerConnection actual constructor(
 
     actual fun close() {
         peerConnection.close()
+        localIceCandidatesChannel.close()
         _connectionState.value = KPeerConnectionState.DISCONNECTED
     }
 
@@ -209,7 +212,7 @@ internal actual class NativePeerConnection actual constructor(
             sdpMLineIndex = candidate.sdpMLineIndex,
             candidate = candidate.sdp
         )
-        _localIceCandidates.tryEmit(nativeCandidate)
+        localIceCandidatesChannel.trySend(nativeCandidate)
     }
 
     internal fun onIceGatheringComplete() {}
@@ -245,7 +248,12 @@ internal actual class NativePeerConnection actual constructor(
         }
         return peerConnection.createDataChannel(config.label, controlConfig)?.let { dc ->
             config.bufferedAmountLowThreshold?.let { threshold ->
-                dc.setBufferedAmountLowThreshold(threshold)
+                // Not all Android WebRTC builds expose this API. Try via reflection when present.
+                runCatching {
+                    dc.javaClass
+                        .getMethod("setBufferedAmountLowThreshold", Long::class.javaPrimitiveType)
+                        .invoke(dc, threshold)
+                }
             }
             NativeDataChannel(dc)
         }
@@ -258,7 +266,7 @@ private fun RTCStatsReport.toTyped(): KPeerStatsReport {
         KPeerStat(
             id = stat.id,
             type = stat.type,
-            timestampUs = stat.timestampUs,
+            timestampUs = stat.timestampUs.toLong(),
             values = values
         )
     }

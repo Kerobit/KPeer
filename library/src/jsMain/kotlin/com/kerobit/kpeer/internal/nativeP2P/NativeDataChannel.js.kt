@@ -40,7 +40,7 @@ internal actual class NativeDataChannel(
             _state.value = DataChannelState.CLOSING
         }
         channel.onmessage = { event ->
-            val data = event.asDynamic().data
+            val data = event.data
             when {
                 data != null && js("data instanceof ArrayBuffer") -> {
                     _incomingBytes.tryEmit(js("new Int8Array(data)").unsafeCast<ByteArray>())
@@ -61,9 +61,9 @@ internal actual class NativeDataChannel(
     actual fun send(data: ByteArray): Boolean {
         if (currentState != DataChannelState.OPEN) return false
         return try {
-            val ok = channel.send(data.unsafeCast<Any>())
+            channel.send(data.unsafeCast<Any>())
             _bufferedAmount.value = channel.bufferedAmount.toLong()
-            ok
+            true
         } catch (e: Throwable) {
             false
         }
@@ -72,9 +72,9 @@ internal actual class NativeDataChannel(
     actual fun sendText(text: String): Boolean {
         if (currentState != DataChannelState.OPEN) return false
         return try {
-            val ok = channel.send(text)
+            channel.send(text)
             _bufferedAmount.value = channel.bufferedAmount.toLong()
-            ok
+            true
         } catch (e: Throwable) {
             false
         }

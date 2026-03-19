@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>kpeer sample (two local peers)</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
+      .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+      .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; min-width: 320px; flex: 1; }
+      pre { background: #0b1020; color: #d7e1ff; padding: 10px; border-radius: 8px; overflow: auto; max-height: 360px; }
+      button { padding: 8px 10px; border-radius: 8px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+      button:disabled { opacity: 0.6; cursor: not-allowed; }
+      input { padding: 8px; border-radius: 8px; border: 1px solid #ccc; width: 100%; box-sizing: border-box; }
+      .muted { color: #666; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <h2>kpeer: two peers in one page</h2>
+    <p class="muted">
+      Loads the production bundle from <code>library/build/dist/js/productionLibrary</code> and wires signaling locally.
+    </p>
+
+    <div class="row">
+      <div class="card">
+        <h3>Controls</h3>
+        <div class="row">
+          <button id="btnStart">Start</button>
+          <button id="btnSend" disabled>Send A → B</button>
+          <button id="btnSaturate" disabled>Saturate</button>
+          <button id="btnClose" disabled>Close</button>
+        </div>
+        <div style="margin-top:10px">
+          <label>Message</label>
+          <input id="msg" value="hello from A" />
+        </div>
+      </div>
+      <div class="card">
+        <h3>Log</h3>
+        <pre id="log"></pre>
+      </div>
+    </div>
+
+    <!-- Single bundled output produced by :library:jsBrowserProductionWebpack -->
+    <script src="../../library/build/dist/js/productionExecutable/kpeer.js"></script>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
+
