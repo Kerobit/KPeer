@@ -7,10 +7,6 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
 import platform.Foundation.NSData
 import platform.Foundation.create
 import platform.darwin.NSObject
@@ -19,29 +15,29 @@ import platform.posix.memcpy
 internal actual class NativeDataChannel(
     private val dataChannel: RTCDataChannel
 ) {
-    private val _incomingBytes = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
-    actual val incomingBytes: Flow<ByteArray> = _incomingBytes.asSharedFlow()
-    private val _incomingText = MutableSharedFlow<String>(extraBufferCapacity = 64)
-    actual val incomingText: Flow<String> = _incomingText.asSharedFlow()
+    private val core = NativeDataChannelCore(
+        initialState = mapState(dataChannel.readyState),
+        initialBufferedAmount = dataChannel.bufferedAmount.toLong(),
+    )
 
-    private val _state = MutableStateFlow(mapState(dataChannel.readyState))
-    actual val state: Flow<DataChannelState> = _state.asStateFlow()
+    actual val incomingBytes: Flow<ByteArray> = core.incomingBytes
+    actual val incomingText: Flow<String> = core.incomingText
+    actual val state: Flow<DataChannelState> = core.state
 
     actual val currentState: DataChannelState
-        get() = _state.value
+        get() = core.currentState
 
-    private val _bufferedAmount = MutableStateFlow(dataChannel.bufferedAmount.toLong())
-    actual val bufferedAmount: Flow<Long> = _bufferedAmount.asStateFlow()
+    actual val bufferedAmount: Flow<Long> = core.bufferedAmount
 
     actual val currentBufferedAmount: Long
-        get() = _bufferedAmount.value
+        get() = core.currentBufferedAmount
 
     actual val label: String
         get() = dataChannel.label
 
     private val observer = object : NSObject(), RTCDataChannelDelegateProtocol {
         override fun dataChannelDidChangeState(dataChannel: RTCDataChannel) {
-            _state.value = mapState(dataChannel.readyState)
+            core.updateState(mapState(dataChannel.readyState))
         }
 
         override fun dataChannel(
@@ -50,9 +46,9 @@ internal actual class NativeDataChannel(
         ) {
             val bytes = didReceiveMessageWithBuffer.data.toByteArray()
             if (didReceiveMessageWithBuffer.isBinary) {
-                _incomingBytes.tryEmit(bytes)
+                core.emitIncomingBytes(bytes)
             } else {
-                _incomingText.tryEmit(bytes.decodeToString())
+                core.emitIncomingText(bytes.decodeToString())
             }
         }
 
@@ -60,40 +56,36 @@ internal actual class NativeDataChannel(
             dataChannel: RTCDataChannel,
             didChangeBufferedAmount: ULong
         ) {
-            _bufferedAmount.value = didChangeBufferedAmount.toLong()
+            core.updateBufferedAmount(didChangeBufferedAmount.toLong())
         }
     }
 
     init {
         dataChannel.delegate = observer
-        _bufferedAmount.value = dataChannel.bufferedAmount.toLong()
+        core.updateBufferedAmount(dataChannel.bufferedAmount.toLong())
     }
 
     actual fun send(data: ByteArray): Boolean {
-        if (currentState != DataChannelState.OPEN) return false
-        return try {
-            val nsData = data.toNSData()
-            val buffer = RTCDataBuffer(data = nsData, isBinary = true)
-            val ok = dataChannel.sendData(buffer)
-            _bufferedAmount.value = dataChannel.bufferedAmount.toLong()
-            ok
-        } catch (e: Exception) {
-            false
-        }
+        return core.trySendBytes(
+            sendNative = {
+                val nsData = data.toNSData()
+                val buffer = RTCDataBuffer(data = nsData, isBinary = true)
+                dataChannel.sendData(buffer)
+            },
+            refreshBufferedAmount = { dataChannel.bufferedAmount.toLong() }
+        )
     }
 
     actual fun sendText(text: String): Boolean {
-        if (currentState != DataChannelState.OPEN) return false
-        return try {
-            val data = text.encodeToByteArray()
-            val nsData = data.toNSData()
-            val buffer = RTCDataBuffer(data = nsData, isBinary = false)
-            val ok = dataChannel.sendData(buffer)
-            _bufferedAmount.value = dataChannel.bufferedAmount.toLong()
-            ok
-        } catch (e: Exception) {
-            false
-        }
+        return core.trySendText(
+            sendNative = {
+                val data = text.encodeToByteArray()
+                val nsData = data.toNSData()
+                val buffer = RTCDataBuffer(data = nsData, isBinary = false)
+                dataChannel.sendData(buffer)
+            },
+            refreshBufferedAmount = { dataChannel.bufferedAmount.toLong() }
+        )
     }
 
     actual fun close() {

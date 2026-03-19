@@ -24,9 +24,6 @@ internal class KSignaler(
     private var pendingOffer = false
     private val signalMutex = Mutex()
 
-    private var hasRemoteDescription = false
-    private val pendingRemoteIceCandidates = mutableListOf<NativeIceCandidate>()
-
     init {
         context.scope.launch {
             connection.negotiationNeeded.collect {
@@ -119,11 +116,6 @@ internal class KSignaler(
                     }
                     connection.setRemoteDescription(NativeSdp(SdpType.OFFER, remote.sdp))
 
-                    hasRemoteDescription = true
-                    val toFlush = pendingRemoteIceCandidates.toList()
-                    pendingRemoteIceCandidates.clear()
-                    toFlush.forEach { connection.addIceCandidate(it) }
-
                     if (!config.initiator) {
                         val answer = connection.createAnswer()
                         signalsSink.tryEmit(KPeerSignal.Answer(answer.description))
@@ -131,11 +123,6 @@ internal class KSignaler(
                 }
                 is KPeerSignal.Answer -> {
                     connection.setRemoteDescription(NativeSdp(SdpType.ANSWER, remote.sdp))
-
-                    hasRemoteDescription = true
-                    val toFlush = pendingRemoteIceCandidates.toList()
-                    pendingRemoteIceCandidates.clear()
-                    toFlush.forEach { connection.addIceCandidate(it) }
                 }
                 is KPeerSignal.IceCandidate -> {
                     val nativeCandidate = NativeIceCandidate(
@@ -143,11 +130,8 @@ internal class KSignaler(
                         sdpMLineIndex = remote.sdpMLineIndex ?: 0,
                         candidate = remote.candidate
                     )
-                    if (config.signaling.bufferRemoteIceUntilDescription && !hasRemoteDescription) {
-                        pendingRemoteIceCandidates.add(nativeCandidate)
-                    } else {
-                        connection.addIceCandidate(nativeCandidate)
-                    }
+                    // Buffering (if any) is handled by the native transport layer.
+                    connection.addIceCandidate(nativeCandidate)
                 }
             }
         }

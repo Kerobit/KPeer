@@ -105,7 +105,6 @@ public object KPeerJs {
         iceServers: Array<dynamic> = emptyArray(),
         flushInterval: Long = 50L,
         maxBatchSize: Int? = null,
-        bufferRemoteIceUntilDescription: Boolean = true
     ): JsKPeer {
         val servers = iceServers.mapNotNull { s ->
             val url = (s.url as? String) ?: return@mapNotNull null
@@ -120,8 +119,7 @@ public object KPeerJs {
             iceServers = if (servers.isEmpty()) KPeerConfig.defaultIceServers() else servers,
             signaling = SignalingConfig(
                 flushInterval = flushInterval,
-                maxBatchSize = maxBatchSize,
-                bufferRemoteIceUntilDescription = bufferRemoteIceUntilDescription
+                maxBatchSize = maxBatchSize
             )
         )
         val peer = KPeer(

@@ -14,13 +14,13 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.channels.trySend
 import kotlin.js.json
 
 internal actual class NativePeerConnection actual constructor(
     config: TransportConfig,
     context: KPeerContext
 ) {
+    private val iceCandidateBuffer = IceCandidateBuffer<RTCIceCandidateInit>()
     private val iceServers = config.iceServers.map { server ->
         json(
             "urls" to server.url,
@@ -91,6 +91,7 @@ internal actual class NativePeerConnection actual constructor(
     }
 
     actual suspend fun setRemoteDescription(sdp: NativeSdp) {
+        iceCandidateBuffer.reset()
         val type = when (sdp.type) {
             SdpType.OFFER -> "offer"
             SdpType.ANSWER -> "answer"
@@ -100,6 +101,10 @@ internal actual class NativePeerConnection actual constructor(
             this.sdp = sdp.description
         }
         peerConnection.setRemoteDescription(desc).await()
+        iceCandidateBuffer.markRemoteDescriptionSetAndFlush { candidate ->
+            // Intentionally do not await: same as current behavior (fire-and-forget).
+            peerConnection.addIceCandidate(candidate)
+        }
     }
 
     actual fun addIceCandidate(candidate: NativeIceCandidate) {
@@ -108,7 +113,9 @@ internal actual class NativePeerConnection actual constructor(
             this.sdpMid = candidate.sdpMid
             this.sdpMLineIndex = candidate.sdpMLineIndex
         }
-        peerConnection.addIceCandidate(init)
+        iceCandidateBuffer.queueOrAdd(init) { buffered ->
+            peerConnection.addIceCandidate(buffered)
+        }
     }
 
     actual suspend fun getStats(): KPeerStatsReport {
@@ -127,7 +134,13 @@ internal actual class NativePeerConnection actual constructor(
             val values = buildMap<String, KPeerStatValue> {
                 for (k in keys) {
                     if (k == "id" || k == "type" || k == "timestamp") continue
-                    put(k, jsToStatValue(s[k]))
+                    val rawValue = s[k]
+                    val normalized: Any? = if (rawValue == null || rawValue == undefined) {
+                        null
+                    } else {
+                        rawValue
+                    }
+                    put(k, toStatValue(normalized))
                 }
             }
             KPeerStat(id = id, type = type, timestampUs = timestampUs, values = values)
@@ -142,9 +155,10 @@ internal actual class NativePeerConnection actual constructor(
     }
 
     actual fun createDataChannel(config: ChannelConfig): NativeDataChannel? {
+        val controlParams = config.toControlParams()
         val options = json(
-            "ordered" to config.ordered,
-            "maxRetransmits" to (if (config.reliable) undefined else 0)
+            "ordered" to controlParams.ordered,
+            "maxRetransmits" to (controlParams.maxRetransmitsOrNull ?: undefined)
         ).unsafeCast<RTCDataChannelInit>()
         val ch = peerConnection.createDataChannel(config.label, options)
         config.bufferedAmountLowThreshold?.let { threshold ->
@@ -161,12 +175,4 @@ internal actual class NativePeerConnection actual constructor(
         "closed" -> KPeerConnectionState.DISCONNECTED
         else -> KPeerConnectionState.DISCONNECTED
     }
-}
-
-private fun jsToStatValue(v: dynamic): KPeerStatValue = when {
-    v == null || v == undefined -> KPeerStatValue.Null
-    jsTypeOf(v) == "string" -> KPeerStatValue.Str(v as String)
-    jsTypeOf(v) == "number" -> KPeerStatValue.Num((v as Number).toDouble())
-    jsTypeOf(v) == "boolean" -> KPeerStatValue.Bool(v as Boolean)
-    else -> KPeerStatValue.Str((js("String(v)") as String))
 }

@@ -89,8 +89,7 @@ internal actual class NativePeerConnection actual constructor(
     private val _negotiationNeeded = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
     actual val negotiationNeeded: Flow<Unit> = _negotiationNeeded.asSharedFlow()
 
-    private val pendingIceCandidates = mutableListOf<RTCIceCandidate>()
-    private var hasRemoteDescription = false
+    private val iceCandidateBuffer = IceCandidateBuffer<RTCIceCandidate>()
 
     actual suspend fun createOffer(): NativeSdp = suspendCoroutine { cont ->
         val constraints = RTCMediaConstraints(
@@ -141,6 +140,9 @@ internal actual class NativePeerConnection actual constructor(
     }
 
     actual suspend fun setRemoteDescription(sdp: NativeSdp): Unit = suspendCoroutine { cont ->
+        // During this window, incoming ICE candidates must be buffered until
+        // the remote description is successfully applied.
+        iceCandidateBuffer.reset()
         val type = when (sdp.type) {
             SdpType.OFFER -> RTCSdpType.RTCSdpTypeOffer
             SdpType.ANSWER -> RTCSdpType.RTCSdpTypeAnswer
@@ -150,11 +152,9 @@ internal actual class NativePeerConnection actual constructor(
             if (error != null) {
                 cont.resumeWithException(Exception("Failed to set remote description: ${error.localizedDescription}"))
             } else {
-                hasRemoteDescription = true
-                pendingIceCandidates.forEach { candidate ->
+                iceCandidateBuffer.markRemoteDescriptionSetAndFlush { candidate ->
                     peerConnection.addIceCandidate(candidate, completionHandler = {})
                 }
-                pendingIceCandidates.clear()
                 cont.resume(Unit)
             }
         }
@@ -166,10 +166,8 @@ internal actual class NativePeerConnection actual constructor(
             sdpMLineIndex = candidate.sdpMLineIndex,
             sdpMid = candidate.sdpMid
         )
-        if (hasRemoteDescription) {
-            peerConnection.addIceCandidate(iceCandidate, completionHandler = {})
-        } else {
-            pendingIceCandidates.add(iceCandidate)
+        iceCandidateBuffer.queueOrAdd(iceCandidate) { nativeCandidate ->
+            peerConnection.addIceCandidate(nativeCandidate, completionHandler = {})
         }
     }
 
@@ -228,11 +226,10 @@ internal actual class NativePeerConnection actual constructor(
     }
 
     actual fun createDataChannel(config: ChannelConfig): NativeDataChannel? {
+        val controlParams = config.toControlParams()
         val controlConfig = RTCDataChannelConfiguration().apply {
-            isOrdered = config.ordered
-            if (!config.reliable) {
-                maxRetransmits = 0
-            }
+            isOrdered = controlParams.ordered
+            controlParams.maxRetransmitsOrNull?.let { maxRetransmits = it }
         }
         return peerConnection.dataChannelForLabel(config.label, configuration = controlConfig)?.let { dc ->
             // iOS support for bufferedAmountLowThreshold varies by WebRTC build.
@@ -259,14 +256,6 @@ private fun RTCStatisticsReport.toTyped(): KPeerStatsReport {
         )
     }
     return KPeerStatsReport(stats = stats)
-}
-
-private fun toStatValue(v: Any?): KPeerStatValue = when (v) {
-    null -> KPeerStatValue.Null
-    is String -> KPeerStatValue.Str(v)
-    is Boolean -> KPeerStatValue.Bool(v)
-    is Number -> KPeerStatValue.Num(v.toDouble())
-    else -> KPeerStatValue.Str(v.toString())
 }
 
 private class PeerConnectionDelegate(

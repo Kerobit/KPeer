@@ -5,7 +5,7 @@ package com.kerobit.kpeer
  *
  * This is transport-independent (offer/answer/ice) and focuses on ICE behavior:
  * - batch outgoing ICE candidates to avoid bursts
- * - optionally buffer remote ICE candidates until the remote description is set
+ * - buffering of remote ICE candidates (before remote description is set) is handled internally by the transport layer
  */
 public data class SignalingConfig(
     /**
@@ -17,11 +17,6 @@ public data class SignalingConfig(
      * Max candidates per batch. When null, batches are only bounded by `flushInterval`.
      */
     public val maxBatchSize: Int? = null,
-    /**
-     * When true, remote ICE candidates received before applying the remote description
-     * are queued and flushed right after `setRemoteDescription(...)`.
-     */
-    public val bufferRemoteIceUntilDescription: Boolean = true,
 ) {
     init {
         require(flushInterval >= 0L) { "flushInterval must be >= 0" }

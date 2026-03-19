@@ -11,22 +11,22 @@ import java.nio.ByteBuffer
 internal actual class NativeDataChannel(
     private val dataChannel: DataChannel
 ) {
-    private val _incomingBytes = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
-    actual val incomingBytes: Flow<ByteArray> = _incomingBytes.asSharedFlow()
-    private val _incomingText = MutableSharedFlow<String>(extraBufferCapacity = 64)
-    actual val incomingText: Flow<String> = _incomingText.asSharedFlow()
+    private val core = NativeDataChannelCore(
+        initialState = mapState(dataChannel.state()),
+        initialBufferedAmount = dataChannel.bufferedAmount()
+    )
 
-    private val _state = MutableStateFlow(mapState(dataChannel.state()))
-    actual val state: Flow<DataChannelState> = _state.asStateFlow()
+    actual val incomingBytes: Flow<ByteArray> = core.incomingBytes
+    actual val incomingText: Flow<String> = core.incomingText
+    actual val state: Flow<DataChannelState> = core.state
 
     actual val currentState: DataChannelState
-        get() = _state.value
+        get() = core.currentState
 
-    private val _bufferedAmount = MutableStateFlow(dataChannel.bufferedAmount())
-    actual val bufferedAmount: Flow<Long> = _bufferedAmount.asStateFlow()
+    actual val bufferedAmount: Flow<Long> = core.bufferedAmount
 
     actual val currentBufferedAmount: Long
-        get() = _bufferedAmount.value
+        get() = core.currentBufferedAmount
 
     actual val label: String
         get() = dataChannel.label()
@@ -34,19 +34,19 @@ internal actual class NativeDataChannel(
     init {
         dataChannel.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) {
-                _bufferedAmount.value = dataChannel.bufferedAmount()
+                core.updateBufferedAmount(dataChannel.bufferedAmount())
             }
             override fun onStateChange() {
-                _state.value = mapState(dataChannel.state())
+                core.updateState(mapState(dataChannel.state()))
             }
             override fun onMessage(buffer: DataChannel.Buffer?) {
                 buffer?.let {
                     val data = ByteArray(it.data.remaining())
                     it.data.get(data)
                     if (it.binary) {
-                        _incomingBytes.tryEmit(data)
+                        core.emitIncomingBytes(data)
                     } else {
-                        _incomingText.tryEmit(data.decodeToString())
+                        core.emitIncomingText(data.decodeToString())
                     }
                 }
             }
@@ -54,28 +54,24 @@ internal actual class NativeDataChannel(
     }
 
     actual fun send(data: ByteArray): Boolean {
-        if (currentState != DataChannelState.OPEN) return false
-        return try {
-            val buffer = DataChannel.Buffer(ByteBuffer.wrap(data), true)
-            val ok = dataChannel.send(buffer)
-            _bufferedAmount.value = dataChannel.bufferedAmount()
-            ok
-        } catch (e: Exception) {
-            false
-        }
+        return core.trySendBytes(
+            sendNative = {
+                val buffer = DataChannel.Buffer(ByteBuffer.wrap(data), true)
+                dataChannel.send(buffer)
+            },
+            refreshBufferedAmount = { dataChannel.bufferedAmount() }
+        )
     }
 
     actual fun sendText(text: String): Boolean {
-        if (currentState != DataChannelState.OPEN) return false
-        return try {
-            val data = text.toByteArray(Charsets.UTF_8)
-            val buffer = DataChannel.Buffer(ByteBuffer.wrap(data), false)
-            val ok = dataChannel.send(buffer)
-            _bufferedAmount.value = dataChannel.bufferedAmount()
-            ok
-        } catch (e: Exception) {
-            false
-        }
+        val textBytes = text.toByteArray(Charsets.UTF_8)
+        return core.trySendText(
+            sendNative = {
+                val buffer = DataChannel.Buffer(ByteBuffer.wrap(textBytes), false)
+                dataChannel.send(buffer)
+            },
+            refreshBufferedAmount = { dataChannel.bufferedAmount() }
+        )
     }
 
     actual fun close() {
