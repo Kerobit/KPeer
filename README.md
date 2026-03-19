@@ -185,6 +185,11 @@ val peer = KPeer(
 )
 ```
 
+### Connection timeout
+
+You can configure a connection-level timeout via `KPeerConfig.connectionTimeoutMs`.
+If the peer does not transition to `CONNECTED` within the given time, it transitions to `FAILED` and the underlying transport is closed.
+
 ### Signaling with Flow
 
 This sample wires two peers together locally using the `signals` flow:

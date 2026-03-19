@@ -15,6 +15,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
@@ -22,7 +24,8 @@ import kotlinx.coroutines.launch
 internal class KPeerConnection(
     context: KPeerContext,
     private val config: TransportConfig,
-    private val logger: KPeerLogger
+    private val logger: KPeerLogger,
+    private val connectionTimeoutMs: Long?
 ) {
     private val nativePeerConnection = NativePeerConnection(config, context)
     private val scopeJob = SupervisorJob(context.scope.coroutineContext[Job])
@@ -32,8 +35,11 @@ internal class KPeerConnection(
     val events: Flow<KPeerTransportEvent> = _events.asSharedFlow()
 
     val localIceCandidates: Flow<NativeIceCandidate> = nativePeerConnection.localIceCandidates
-    val connectionState: Flow<KPeerConnectionState> = nativePeerConnection.connectionState
-    val currentConnectionState: KPeerConnectionState get() = nativePeerConnection.currentConnectionState
+    private val _connectionState = MutableStateFlow<KPeerConnectionState>(
+        nativePeerConnection.currentConnectionState
+    )
+    val connectionState: Flow<KPeerConnectionState> = _connectionState.asStateFlow()
+    val currentConnectionState: KPeerConnectionState get() = _connectionState.value
     val negotiationNeeded: Flow<Unit> = nativePeerConnection.negotiationNeeded
 
     suspend fun getStats(): KPeerStatsReport = nativePeerConnection.getStats()
@@ -46,13 +52,46 @@ internal class KPeerConnection(
         if (started) return
         started = true
 
+        // Keep track of whether a connection-level timeout already fired.
+        // Once this happens, we must not override the FAILED state with later
+        // native DISCONNECTED/other state emissions.
+        var timedOut = false
+        var timeoutJob: Job? = null
+        _connectionState.value = KPeerConnectionState.CONNECTING
+
+        if (connectionTimeoutMs != null && connectionTimeoutMs > 0L) {
+            timeoutJob = scope.launch {
+                delay(connectionTimeoutMs)
+                if (timedOut) return@launch
+
+                // If we didn't reach CONNECTED in time, mark failure and close transport.
+                if (_connectionState.value != KPeerConnectionState.CONNECTED &&
+                    _connectionState.value != KPeerConnectionState.FAILED
+                ) {
+                    timedOut = true
+                    _connectionState.value = KPeerConnectionState.FAILED
+                    _events.emit(KPeerTransportEvent.Failed)
+                    nativePeerConnection.close()
+                }
+            }
+        }
+
         scope.launch {
             nativePeerConnection.connectionState.collect { state ->
+                if (timedOut) return@collect
+
+                _connectionState.value = state
                 when (state) {
                     KPeerConnectionState.CONNECTED -> _events.emit(KPeerTransportEvent.Connected)
                     KPeerConnectionState.DISCONNECTED -> _events.emit(KPeerTransportEvent.Disconnected)
                     KPeerConnectionState.FAILED -> _events.emit(KPeerTransportEvent.Failed)
                     KPeerConnectionState.CONNECTING -> Unit
+                }
+
+                // Cancel the timeout once the connection has either succeeded or failed.
+                if (state == KPeerConnectionState.CONNECTED || state == KPeerConnectionState.FAILED) {
+                    timeoutJob?.cancel()
+                    timeoutJob = null
                 }
             }
         }

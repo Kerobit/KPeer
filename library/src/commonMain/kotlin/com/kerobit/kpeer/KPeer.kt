@@ -57,7 +57,8 @@ internal class KPeerImpl(
     private val connection = KPeerConnection(
         context = context,
         config = transportConfig,
-        logger = logger
+        logger = logger,
+        connectionTimeoutMs = config.connectionTimeoutMs
     )
 
     private val _signals = MutableSharedFlow<KPeerSignal>(extraBufferCapacity = 64)

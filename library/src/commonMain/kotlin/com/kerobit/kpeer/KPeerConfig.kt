@@ -13,7 +13,12 @@ public data class IceServer(
 public data class KPeerConfig(
     public val initiator: Boolean,
     public val iceServers: List<IceServer> = defaultIceServers(),
-    public val signaling: SignalingConfig = SignalingConfig()
+    public val signaling: SignalingConfig = SignalingConfig(),
+    /**
+     * If the peer does not reach `CONNECTED` within this time, it transitions to `FAILED`.
+     * Set to `null` to disable.
+     */
+    public val connectionTimeoutMs: Long? = null
 ) {
     public companion object {
         public fun defaultIceServers(): List<IceServer> = listOf(
