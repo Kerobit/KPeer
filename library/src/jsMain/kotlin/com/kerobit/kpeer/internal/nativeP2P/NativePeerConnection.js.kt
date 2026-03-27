@@ -1,8 +1,11 @@
 package com.kerobit.kpeer.internal.nativeP2P
 
-import com.kerobit.kpeer.ChannelConfig
+import com.kerobit.kpeer.KChannelConfig
 import com.kerobit.kpeer.KPeerConnectionState
 import com.kerobit.kpeer.KPeerContext
+import com.kerobit.kpeer.KPeerIceCandidate
+import com.kerobit.kpeer.KPeerSignal
+import com.kerobit.kpeer.KPeerSdpType
 import com.kerobit.kpeer.KPeerStat
 import com.kerobit.kpeer.KPeerStatValue
 import com.kerobit.kpeer.KPeerStatsReport
@@ -33,8 +36,8 @@ internal actual class NativePeerConnection actual constructor(
 
     private val peerConnection = RTCPeerConnection(rtcConfig)
 
-    private val localIceCandidatesChannel = Channel<NativeIceCandidate>(Channel.UNLIMITED)
-    actual val localIceCandidates: Flow<NativeIceCandidate> = localIceCandidatesChannel.receiveAsFlow()
+    private val localIceCandidatesChannel = Channel<KPeerIceCandidate>(Channel.UNLIMITED)
+    actual val localIceCandidates: Flow<KPeerIceCandidate> = localIceCandidatesChannel.receiveAsFlow()
 
     private val _connectionState = MutableStateFlow(KPeerConnectionState.CONNECTING)
     actual val connectionState: Flow<KPeerConnectionState> = _connectionState.asStateFlow()
@@ -52,9 +55,9 @@ internal actual class NativePeerConnection actual constructor(
             val c = event.candidate
             if (c != null && c != undefined) {
                 localIceCandidatesChannel.trySend(
-                    NativeIceCandidate(
+                    KPeerIceCandidate(
                         sdpMid = c.sdpMid,
-                        sdpMLineIndex = c.sdpMLineIndex ?: 0,
+                        sdpMLineIndex = c.sdpMLineIndex,
                         candidate = c.candidate
                     )
                 )
@@ -72,33 +75,27 @@ internal actual class NativePeerConnection actual constructor(
         }
     }
 
-    actual suspend fun createOffer(): NativeSdp {
+    actual suspend fun createOffer(): String {
         val desc = peerConnection.createOffer().await()
         peerConnection.setLocalDescription(desc).await()
-        return NativeSdp(
-            type = SdpType.OFFER,
-            description = desc.sdp
-        )
+        return desc.sdp
     }
 
-    actual suspend fun createAnswer(): NativeSdp {
+    actual suspend fun createAnswer(): String {
         val desc = peerConnection.createAnswer().await()
         peerConnection.setLocalDescription(desc).await()
-        return NativeSdp(
-            type = SdpType.ANSWER,
-            description = desc.sdp
-        )
+        return desc.sdp
     }
 
-    actual suspend fun setRemoteDescription(sdp: NativeSdp) {
+    actual suspend fun setRemoteDescription(type: KPeerSdpType, sdp: String) {
         iceCandidateBuffer.reset()
-        val type = when (sdp.type) {
-            SdpType.OFFER -> "offer"
-            SdpType.ANSWER -> "answer"
+        val rtcType = when (type) {
+            KPeerSdpType.OFFER -> "offer"
+            KPeerSdpType.ANSWER -> "answer"
         }
         val desc = js("({})").unsafeCast<RTCSessionDescriptionInit>().apply {
-            this.type = type
-            this.sdp = sdp.description
+            this.type = rtcType
+            this.sdp = sdp
         }
         peerConnection.setRemoteDescription(desc).await()
         iceCandidateBuffer.markRemoteDescriptionSetAndFlush { candidate ->
@@ -107,11 +104,11 @@ internal actual class NativePeerConnection actual constructor(
         }
     }
 
-    actual fun addIceCandidate(candidate: NativeIceCandidate) {
+    actual fun addIceCandidate(candidate: KPeerIceCandidate) {
         val init = js("({})").unsafeCast<RTCIceCandidateInit>().apply {
             this.candidate = candidate.candidate
             this.sdpMid = candidate.sdpMid
-            this.sdpMLineIndex = candidate.sdpMLineIndex
+            this.sdpMLineIndex = candidate.sdpMLineIndex ?: 0
         }
         iceCandidateBuffer.queueOrAdd(init) { buffered ->
             peerConnection.addIceCandidate(buffered)
@@ -154,7 +151,7 @@ internal actual class NativePeerConnection actual constructor(
         _connectionState.value = KPeerConnectionState.DISCONNECTED
     }
 
-    actual fun createDataChannel(config: ChannelConfig): NativeDataChannel? {
+    actual fun createDataChannel(config: KChannelConfig): NativeDataChannel? {
         val controlParams = config.toControlParams()
         val options = json(
             "ordered" to controlParams.ordered,

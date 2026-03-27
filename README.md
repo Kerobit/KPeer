@@ -160,13 +160,13 @@ The simplest mental model is:
 
 Supported signaling payloads are:
 
-- `KPeerSignal.Offer`
-- `KPeerSignal.Answer`
-- `KPeerSignal.IceCandidate`
+- `KPeerOffer`
+- `KPeerAnswer`
+- `KPeerIceCandidate`
 
 ### ICE batching (outgoing) and buffering (incoming)
 
-`KPeer` can reduce the burst of `KPeerSignal.IceCandidate` messages by batching *outgoing* local ICE candidates.
+`KPeer` can reduce the burst of `KPeerIceCandidate` messages by batching *outgoing* local ICE candidates.
 It also can buffer *incoming* remote ICE candidates until the remote description is set (which makes delivery order less important).
 
 Configure it via `KPeerConfig.signaling`:
@@ -254,7 +254,7 @@ That local wiring is only for demonstration. In production, each `onSignal` call
 
 ```kotlin
 val chatChannel = peer.createChannel(
-    ChannelConfig(
+    KChannelConfig(
         label = "chat",
         ordered = true,
         reliable = true
@@ -265,16 +265,16 @@ val chatChannel = peer.createChannel(
 Multiple channels can live on the same peer connection:
 
 ```kotlin
-val chat = peer.createChannel(ChannelConfig(label = "chat"))
+val chat = peer.createChannel(KChannelConfig(label = "chat"))
 val telemetry = peer.createChannel(
-    ChannelConfig(
+    KChannelConfig(
         label = "telemetry",
         ordered = false,
         reliable = false
     )
 )
 val fileTransfer = peer.createChannel(
-    ChannelConfig(
+    KChannelConfig(
         label = "file-transfer"
     )
 )
@@ -390,7 +390,7 @@ channelSubscription.cancel()
 This sample shows two peers in the same process. In a real application they would live in different devices or runtimes, and you would use websockets, HTTP, or another transport to exchange signaling messages.
 
 ```kotlin
-import com.kerobit.kpeer.ChannelConfig
+import com.kerobit.kpeer.KChannelConfig
 import com.kerobit.kpeer.KPeer
 import com.kerobit.kpeer.KPeerConfig
 import com.kerobit.kpeer.KPeerContext
@@ -441,7 +441,7 @@ fun sample(androidContext: Any?) {
     }
 
     scope.launch {
-        val chat = peer1.createChannel(ChannelConfig(label = "chat"))
+        val chat = peer1.createChannel(KChannelConfig(label = "chat"))
         chat?.onState { state ->
             println("peer1 chat state: $state")
         }

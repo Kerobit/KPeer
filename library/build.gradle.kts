@@ -19,6 +19,7 @@ base {
 val jsModuleName = "kpeer"
 val cocoaPodName = "KerobitKPeer"
 val appleFrameworkName = "KerobitKPeer"
+val webRtcXcframeworkBasePath = "cocoapods/synthetic/ios/Pods/WebRTC-SDK/WebRTC.xcframework"
 
 kotlin {
     jvm()
@@ -41,9 +42,11 @@ kotlin {
             }
         }
     }
-    iosX64()
-    iosArm64()
-    iosSimulatorArm64()
+    val iosTargets = listOf(
+        iosX64(),
+        iosArm64(),
+        iosSimulatorArm64()
+    )
     linuxX64()
 
     val xcf = XCFramework(appleFrameworkName)
@@ -70,7 +73,7 @@ kotlin {
         version = "1.0.0"
         ios.deploymentTarget = "16.0"
         pod("WebRTC-SDK") {
-            version = "~> 137.7151.12"
+            version = "~> 144.7559.01"
             moduleName = "WebRTC"
         }
         framework {
@@ -79,11 +82,29 @@ kotlin {
         }
     }
 
-    listOf(iosX64(), iosArm64(), iosSimulatorArm64()).forEach { target ->
+    iosTargets.forEach { target ->
         target.binaries.framework {
             baseName = appleFrameworkName
             isStatic = true
             xcf.add(this)
+        }
+
+        val webRtcSlice = when (target.name) {
+            "iosArm64" -> "ios-arm64"
+            "iosX64", "iosSimulatorArm64" -> "ios-arm64_x86_64-simulator"
+            else -> null
+        }
+
+        if (webRtcSlice != null) {
+            target.compilations.getByName("main").cinterops.named("WebRTC") {
+                val frameworkDir = layout.buildDirectory
+                    .dir("$webRtcXcframeworkBasePath/$webRtcSlice")
+                    .get()
+                    .asFile
+                    .absolutePath
+
+                compilerOpts("-F$frameworkDir")
+            }
         }
     }
 

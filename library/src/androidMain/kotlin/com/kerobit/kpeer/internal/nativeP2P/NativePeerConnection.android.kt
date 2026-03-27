@@ -1,9 +1,12 @@
 package com.kerobit.kpeer.internal.nativeP2P
 
 import android.content.Context
-import com.kerobit.kpeer.ChannelConfig
+import com.kerobit.kpeer.KChannelConfig
 import com.kerobit.kpeer.KPeerConnectionState
 import com.kerobit.kpeer.KPeerContext
+import com.kerobit.kpeer.KPeerIceCandidate
+import com.kerobit.kpeer.KPeerSignal
+import com.kerobit.kpeer.KPeerSdpType
 import com.kerobit.kpeer.KPeerStat
 import com.kerobit.kpeer.KPeerStatValue
 import com.kerobit.kpeer.KPeerStatsReport
@@ -85,8 +88,8 @@ internal actual class NativePeerConnection actual constructor(
         pc
     }
 
-    private val localIceCandidatesChannel = Channel<NativeIceCandidate>(Channel.UNLIMITED)
-    actual val localIceCandidates: Flow<NativeIceCandidate> = localIceCandidatesChannel.receiveAsFlow()
+    private val localIceCandidatesChannel = Channel<KPeerIceCandidate>(Channel.UNLIMITED)
+    actual val localIceCandidates: Flow<KPeerIceCandidate> = localIceCandidatesChannel.receiveAsFlow()
 
     private val _connectionState = MutableStateFlow(KPeerConnectionState.CONNECTING)
     actual val connectionState: Flow<KPeerConnectionState> = _connectionState.asStateFlow()
@@ -101,7 +104,7 @@ internal actual class NativePeerConnection actual constructor(
 
     private val iceCandidateBuffer = IceCandidateBuffer<IceCandidate>()
 
-    actual suspend fun createOffer(): NativeSdp = suspendCoroutine { cont ->
+    actual suspend fun createOffer(): String = suspendCoroutine { cont ->
         val constraints = MediaConstraints()
         peerConnection.createOffer(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription?) {
@@ -109,7 +112,7 @@ internal actual class NativePeerConnection actual constructor(
                     peerConnection.setLocalDescription(object : SdpObserver {
                         override fun onCreateSuccess(sdp: SessionDescription?) {}
                         override fun onSetSuccess() {
-                            cont.resume(NativeSdp(SdpType.OFFER, it.description))
+                            cont.resume(it.description)
                         }
                         override fun onCreateFailure(error: String?) {}
                         override fun onSetFailure(error: String?) {
@@ -126,7 +129,7 @@ internal actual class NativePeerConnection actual constructor(
         }, constraints)
     }
 
-    actual suspend fun createAnswer(): NativeSdp = suspendCoroutine { cont ->
+    actual suspend fun createAnswer(): String = suspendCoroutine { cont ->
         val constraints = MediaConstraints()
         peerConnection.createAnswer(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription?) {
@@ -134,7 +137,7 @@ internal actual class NativePeerConnection actual constructor(
                     peerConnection.setLocalDescription(object : SdpObserver {
                         override fun onCreateSuccess(sdp: SessionDescription?) {}
                         override fun onSetSuccess() {
-                            cont.resume(NativeSdp(SdpType.ANSWER, it.description))
+                            cont.resume(it.description)
                         }
                         override fun onCreateFailure(error: String?) {}
                         override fun onSetFailure(error: String?) {
@@ -151,15 +154,15 @@ internal actual class NativePeerConnection actual constructor(
         }, constraints)
     }
 
-    actual suspend fun setRemoteDescription(sdp: NativeSdp): Unit = suspendCoroutine { cont ->
+    actual suspend fun setRemoteDescription(type: KPeerSdpType, sdp: String): Unit = suspendCoroutine { cont ->
         // Prepare for a new remote description application.
         // During this window, ICE candidates received via `addIceCandidate(...)` must be buffered.
         iceCandidateBuffer.reset()
-        val type = when (sdp.type) {
-            SdpType.OFFER -> SessionDescription.Type.OFFER
-            SdpType.ANSWER -> SessionDescription.Type.ANSWER
+        val rtcType = when (type) {
+            KPeerSdpType.OFFER -> SessionDescription.Type.OFFER
+            KPeerSdpType.ANSWER -> SessionDescription.Type.ANSWER
         }
-        val sessionDescription = SessionDescription(type, sdp.description)
+        val sessionDescription = SessionDescription(rtcType, sdp)
         peerConnection.setRemoteDescription(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription?) {}
             override fun onSetSuccess() {
@@ -175,10 +178,10 @@ internal actual class NativePeerConnection actual constructor(
         }, sessionDescription)
     }
 
-    actual fun addIceCandidate(candidate: NativeIceCandidate) {
+    actual fun addIceCandidate(candidate: KPeerIceCandidate) {
         val iceCandidate = IceCandidate(
             candidate.sdpMid,
-            candidate.sdpMLineIndex,
+            candidate.sdpMLineIndex ?: 0,
             candidate.candidate
         )
         iceCandidateBuffer.queueOrAdd(iceCandidate) { nativeCandidate ->
@@ -205,12 +208,12 @@ internal actual class NativePeerConnection actual constructor(
     }
 
     internal fun onIceCandidate(candidate: IceCandidate) {
-        val nativeCandidate = NativeIceCandidate(
+        val signalCandidate = KPeerIceCandidate(
             sdpMid = candidate.sdpMid,
             sdpMLineIndex = candidate.sdpMLineIndex,
             candidate = candidate.sdp
         )
-        localIceCandidatesChannel.trySend(nativeCandidate)
+        localIceCandidatesChannel.trySend(signalCandidate)
     }
 
     internal fun onIceGatheringComplete() {}
@@ -237,7 +240,7 @@ internal actual class NativePeerConnection actual constructor(
         _negotiationNeeded.tryEmit(Unit)
     }
 
-    actual fun createDataChannel(config: ChannelConfig): NativeDataChannel? {
+    actual fun createDataChannel(config: KChannelConfig): NativeDataChannel? {
         val controlParams = config.toControlParams()
         val controlConfig = DataChannel.Init().apply {
             ordered = controlParams.ordered

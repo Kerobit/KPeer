@@ -47,7 +47,7 @@ public class JsKPeer(
      */
     public fun createChannel(label: String) {
         scope.launch {
-            peer.createChannel(ChannelConfig(label = label))
+            peer.createChannel(KChannelConfig(label = label))
         }
     }
 
@@ -131,22 +131,23 @@ public object KPeerJs {
 }
 
 private fun signalToJson(signal: KPeerSignal): Json = when (signal) {
-    is KPeerSignal.Offer -> json("type" to "offer", "sdp" to signal.sdp)
-    is KPeerSignal.Answer -> json("type" to "answer", "sdp" to signal.sdp)
-    is KPeerSignal.IceCandidate -> json(
+    is KPeerOffer -> json("type" to "offer", "sdp" to signal.sdp)
+    is KPeerAnswer -> json("type" to "answer", "sdp" to signal.sdp)
+    is KPeerIceCandidate -> json(
         "type" to "ice",
         "candidate" to signal.candidate,
         "sdpMid" to signal.sdpMid,
         "sdpMLineIndex" to signal.sdpMLineIndex
     )
+    else -> error("Unknown KPeerSignal implementation: ${signal::class}")
 }
 
 private fun jsonToSignal(obj: Json): KPeerSignal {
     val type = obj["type"] as? String ?: error("signal.type missing")
     return when (type) {
-        "offer" -> KPeerSignal.Offer(sdp = obj["sdp"] as String)
-        "answer" -> KPeerSignal.Answer(sdp = obj["sdp"] as String)
-        "ice" -> KPeerSignal.IceCandidate(
+        "offer" -> KPeerOffer(sdp = obj["sdp"] as String)
+        "answer" -> KPeerAnswer(sdp = obj["sdp"] as String)
+        "ice" -> KPeerIceCandidate(
             candidate = obj["candidate"] as String,
             sdpMid = obj["sdpMid"] as? String,
             sdpMLineIndex = (obj["sdpMLineIndex"] as? Number)?.toInt()

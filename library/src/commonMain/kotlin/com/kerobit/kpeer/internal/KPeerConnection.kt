@@ -4,12 +4,13 @@ import com.kerobit.kpeer.KPeerConnectionState
 import com.kerobit.kpeer.KPeerContext
 import com.kerobit.kpeer.KPeerLogger
 import com.kerobit.kpeer.KPeerStatsReport
-import com.kerobit.kpeer.ChannelConfig
+import com.kerobit.kpeer.KChannelConfig
+import com.kerobit.kpeer.KPeerIceCandidate
+import com.kerobit.kpeer.KPeerSignal
+import com.kerobit.kpeer.KPeerSdpType
 import com.kerobit.kpeer.internal.nativeP2P.DataChannelState
 import com.kerobit.kpeer.internal.nativeP2P.NativeDataChannel
-import com.kerobit.kpeer.internal.nativeP2P.NativeIceCandidate
 import com.kerobit.kpeer.internal.nativeP2P.NativePeerConnection
-import com.kerobit.kpeer.internal.nativeP2P.NativeSdp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -34,7 +35,7 @@ internal class KPeerConnection(
     private val _events = MutableSharedFlow<KPeerTransportEvent>(extraBufferCapacity = 64)
     val events: Flow<KPeerTransportEvent> = _events.asSharedFlow()
 
-    val localIceCandidates: Flow<NativeIceCandidate> = nativePeerConnection.localIceCandidates
+    val localIceCandidates: Flow<KPeerIceCandidate> = nativePeerConnection.localIceCandidates
     private val _connectionState = MutableStateFlow<KPeerConnectionState>(
         nativePeerConnection.currentConnectionState
     )
@@ -149,7 +150,7 @@ internal class KPeerConnection(
 
     fun getDataChannel(label: String): NativeDataChannel? = channelsByLabel[label]
 
-    suspend fun createDataChannel(config: ChannelConfig): NativeDataChannel? {
+    suspend fun createDataChannel(config: KChannelConfig): NativeDataChannel? {
         channelsByLabel[config.label]?.let { return it }
         val created = nativePeerConnection.createDataChannel(config)
         if (created != null) {
@@ -162,13 +163,14 @@ internal class KPeerConnection(
         channelsByLabel[label]?.close()
     }
 
-    suspend fun createOffer(): NativeSdp {
-        return nativePeerConnection.createOffer()
-    }
+    suspend fun createOffer(): String = nativePeerConnection.createOffer()
 
-    suspend fun createAnswer(): NativeSdp = nativePeerConnection.createAnswer()
-    suspend fun setRemoteDescription(sdp: NativeSdp) = nativePeerConnection.setRemoteDescription(sdp)
-    fun addIceCandidate(candidate: NativeIceCandidate) = nativePeerConnection.addIceCandidate(candidate)
+    suspend fun createAnswer(): String = nativePeerConnection.createAnswer()
+
+    suspend fun setRemoteDescription(type: KPeerSdpType, sdp: String) =
+        nativePeerConnection.setRemoteDescription(type, sdp)
+
+    fun addIceCandidate(candidate: KPeerIceCandidate) = nativePeerConnection.addIceCandidate(candidate)
 
     fun close() {
         scopeJob.cancel()

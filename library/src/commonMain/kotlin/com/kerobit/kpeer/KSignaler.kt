@@ -1,9 +1,6 @@
 package com.kerobit.kpeer
 
 import com.kerobit.kpeer.internal.KPeerConnection
-import com.kerobit.kpeer.internal.nativeP2P.NativeIceCandidate
-import com.kerobit.kpeer.internal.nativeP2P.NativeSdp
-import com.kerobit.kpeer.internal.nativeP2P.SdpType
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -49,12 +46,12 @@ internal class KSignaler(
                 // No batching: emit every candidate as soon as it is generated.
                 if (flushIntervalMs <= 0L) {
                     connection.localIceCandidates.collect { candidate ->
-                        signalsSink.emit(candidate.toSignal())
+                        signalsSink.emit(candidate)
                     }
                     return@launch
                 }
 
-                val pendingLocalCandidates = mutableListOf<NativeIceCandidate>()
+                val pendingLocalCandidates = mutableListOf<KPeerIceCandidate>()
                 var flushTimerJob: Job? = null
                 val batchMutex = Mutex()
 
@@ -69,7 +66,7 @@ internal class KSignaler(
                     if (batch.isEmpty()) return
                     for (c in batch) {
                         // Use emit() to avoid dropping ICE candidates.
-                        signalsSink.emit(c.toSignal())
+                        signalsSink.emit(c)
                     }
                 }
 
@@ -109,30 +106,30 @@ internal class KSignaler(
     suspend fun handleSignal(remote: KPeerSignal) {
         signalMutex.withLock {
             when (remote) {
-                is KPeerSignal.Offer -> {
+                is KPeerOffer -> {
                     // The answering side lazily starts the transport when the first offer arrives.
                     if (!config.initiator) {
                         ensureStarted()
                     }
-                    connection.setRemoteDescription(NativeSdp(SdpType.OFFER, remote.sdp))
+                    connection.setRemoteDescription(KPeerSdpType.OFFER, remote.sdp)
 
                     if (!config.initiator) {
-                        val answer = connection.createAnswer()
-                        signalsSink.tryEmit(KPeerSignal.Answer(answer.description))
+                        val answerSdp = connection.createAnswer()
+                        signalsSink.tryEmit(KPeerAnswer(sdp = answerSdp))
                     }
                 }
-                is KPeerSignal.Answer -> {
-                    connection.setRemoteDescription(NativeSdp(SdpType.ANSWER, remote.sdp))
+                is KPeerAnswer -> {
+                    connection.setRemoteDescription(KPeerSdpType.ANSWER, remote.sdp)
                 }
-                is KPeerSignal.IceCandidate -> {
-                    val nativeCandidate = NativeIceCandidate(
-                        sdpMid = remote.sdpMid,
-                        sdpMLineIndex = remote.sdpMLineIndex ?: 0,
-                        candidate = remote.candidate
-                    )
+                is KPeerIceCandidate -> {
+                    if (remote.sdpMLineIndex == null) {
+                        logger.warn("Ignoring ICE candidate with null sdpMLineIndex")
+                        return
+                    }
                     // Buffering (if any) is handled by the native transport layer.
-                    connection.addIceCandidate(nativeCandidate)
+                    connection.addIceCandidate(remote)
                 }
+                else -> Unit
             }
         }
     }
@@ -159,20 +156,12 @@ internal class KSignaler(
             do {
                 pendingOffer = false
                 try {
-                    val offer = connection.createOffer()
-                    signalsSink.tryEmit(KPeerSignal.Offer(offer.description))
+                    val offerSdp = connection.createOffer()
+                    signalsSink.tryEmit(KPeerOffer(sdp = offerSdp))
                 } catch (e: Exception) {
                     logger.warn("Failed to create offer: ${e.message}")
                 }
             } while (pendingOffer)
         }
-    }
-
-    private fun NativeIceCandidate.toSignal(): KPeerSignal.IceCandidate {
-        return KPeerSignal.IceCandidate(
-            candidate = candidate,
-            sdpMid = sdpMid,
-            sdpMLineIndex = sdpMLineIndex
-        )
     }
 }

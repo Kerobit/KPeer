@@ -1,6 +1,6 @@
 package com.kerobit.kpeer.internal.nativeP2P
 
-import com.kerobit.kpeer.ChannelConfig
+import com.kerobit.kpeer.KChannelConfig
 
 internal data class DataChannelControlParams(
     val ordered: Boolean,
@@ -11,7 +11,7 @@ internal data class DataChannelControlParams(
     val maxRetransmitsOrNull: Int?
 )
 
-internal fun ChannelConfig.toControlParams(): DataChannelControlParams {
+internal fun KChannelConfig.toControlParams(): DataChannelControlParams {
     return DataChannelControlParams(
         ordered = this.ordered,
         maxRetransmitsOrNull = if (this.reliable) null else 0

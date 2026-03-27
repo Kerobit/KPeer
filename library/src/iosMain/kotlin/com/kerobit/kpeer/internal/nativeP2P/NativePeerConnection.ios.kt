@@ -2,9 +2,12 @@
 
 package com.kerobit.kpeer.internal.nativeP2P
 
-import com.kerobit.kpeer.ChannelConfig
+import com.kerobit.kpeer.KChannelConfig
 import com.kerobit.kpeer.KPeerConnectionState
 import com.kerobit.kpeer.KPeerContext
+import com.kerobit.kpeer.KPeerIceCandidate
+import com.kerobit.kpeer.KPeerSignal
+import com.kerobit.kpeer.KPeerSdpType
 import com.kerobit.kpeer.KPeerStat
 import com.kerobit.kpeer.KPeerStatValue
 import com.kerobit.kpeer.KPeerStatsReport
@@ -75,8 +78,8 @@ internal actual class NativePeerConnection actual constructor(
         ) ?: throw IllegalStateException("Failed to create RTCPeerConnection")
     }
 
-    private val localIceCandidatesChannel = Channel<NativeIceCandidate>(Channel.UNLIMITED)
-    actual val localIceCandidates: Flow<NativeIceCandidate> = localIceCandidatesChannel.receiveAsFlow()
+    private val localIceCandidatesChannel = Channel<KPeerIceCandidate>(Channel.UNLIMITED)
+    actual val localIceCandidates: Flow<KPeerIceCandidate> = localIceCandidatesChannel.receiveAsFlow()
 
     private val _connectionState = MutableStateFlow(KPeerConnectionState.CONNECTING)
     actual val connectionState: Flow<KPeerConnectionState> = _connectionState.asStateFlow()
@@ -91,7 +94,7 @@ internal actual class NativePeerConnection actual constructor(
 
     private val iceCandidateBuffer = IceCandidateBuffer<RTCIceCandidate>()
 
-    actual suspend fun createOffer(): NativeSdp = suspendCoroutine { cont ->
+    actual suspend fun createOffer(): String = suspendCoroutine { cont ->
         val constraints = RTCMediaConstraints(
             mandatoryConstraints = null,
             optionalConstraints = null
@@ -109,13 +112,13 @@ internal actual class NativePeerConnection actual constructor(
                 if (setError != null) {
                     cont.resumeWithException(Exception("Failed to set local description: ${setError.localizedDescription}"))
                 } else {
-                    cont.resume(NativeSdp(SdpType.OFFER, sdp.sdp))
+                    cont.resume(sdp.sdp)
                 }
             }
         }
     }
 
-    actual suspend fun createAnswer(): NativeSdp = suspendCoroutine { cont ->
+    actual suspend fun createAnswer(): String = suspendCoroutine { cont ->
         val constraints = RTCMediaConstraints(
             mandatoryConstraints = null,
             optionalConstraints = null
@@ -133,21 +136,21 @@ internal actual class NativePeerConnection actual constructor(
                 if (setError != null) {
                     cont.resumeWithException(Exception("Failed to set local description: ${setError.localizedDescription}"))
                 } else {
-                    cont.resume(NativeSdp(SdpType.ANSWER, sdp.sdp))
+                    cont.resume(sdp.sdp)
                 }
             }
         }
     }
 
-    actual suspend fun setRemoteDescription(sdp: NativeSdp): Unit = suspendCoroutine { cont ->
+    actual suspend fun setRemoteDescription(type: KPeerSdpType, sdp: String): Unit = suspendCoroutine { cont ->
         // During this window, incoming ICE candidates must be buffered until
         // the remote description is successfully applied.
         iceCandidateBuffer.reset()
-        val type = when (sdp.type) {
-            SdpType.OFFER -> RTCSdpType.RTCSdpTypeOffer
-            SdpType.ANSWER -> RTCSdpType.RTCSdpTypeAnswer
+        val rtcType = when (type) {
+            KPeerSdpType.OFFER -> RTCSdpType.RTCSdpTypeOffer
+            KPeerSdpType.ANSWER -> RTCSdpType.RTCSdpTypeAnswer
         }
-        val sessionDescription = RTCSessionDescription(type = type, sdp = sdp.description)
+        val sessionDescription = RTCSessionDescription(type = rtcType, sdp = sdp)
         peerConnection.setRemoteDescription(sessionDescription) { error ->
             if (error != null) {
                 cont.resumeWithException(Exception("Failed to set remote description: ${error.localizedDescription}"))
@@ -160,10 +163,10 @@ internal actual class NativePeerConnection actual constructor(
         }
     }
 
-    actual fun addIceCandidate(candidate: NativeIceCandidate) {
+    actual fun addIceCandidate(candidate: KPeerIceCandidate) {
         val iceCandidate = RTCIceCandidate(
             sdp = candidate.candidate,
-            sdpMLineIndex = candidate.sdpMLineIndex,
+            sdpMLineIndex = candidate.sdpMLineIndex ?: 0,
             sdpMid = candidate.sdpMid
         )
         iceCandidateBuffer.queueOrAdd(iceCandidate) { nativeCandidate ->
@@ -192,12 +195,12 @@ internal actual class NativePeerConnection actual constructor(
     }
 
     internal fun onIceCandidate(candidate: RTCIceCandidate) {
-        val nativeCandidate = NativeIceCandidate(
+        val signalCandidate = KPeerIceCandidate(
             sdpMid = candidate.sdpMid,
             sdpMLineIndex = candidate.sdpMLineIndex,
             candidate = candidate.sdp
         )
-        localIceCandidatesChannel.trySend(nativeCandidate)
+        localIceCandidatesChannel.trySend(signalCandidate)
     }
 
     internal fun onIceGatheringComplete() {}
@@ -225,7 +228,7 @@ internal actual class NativePeerConnection actual constructor(
         _negotiationNeeded.tryEmit(Unit)
     }
 
-    actual fun createDataChannel(config: ChannelConfig): NativeDataChannel? {
+    actual fun createDataChannel(config: KChannelConfig): NativeDataChannel? {
         val controlParams = config.toControlParams()
         val controlConfig = RTCDataChannelConfiguration().apply {
             isOrdered = controlParams.ordered

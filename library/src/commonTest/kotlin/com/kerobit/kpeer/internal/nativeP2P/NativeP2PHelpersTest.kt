@@ -1,6 +1,6 @@
 package com.kerobit.kpeer.internal.nativeP2P
 
-import com.kerobit.kpeer.ChannelConfig
+import com.kerobit.kpeer.KChannelConfig
 import com.kerobit.kpeer.KPeerStatValue
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -20,12 +20,12 @@ class NativeP2PHelpersTest {
 
     @Test
     fun channelConfig_toControlParams_sets_retransmits_only_when_unreliable() {
-        val reliable = ChannelConfig(label = "ch1", ordered = true, reliable = true)
+        val reliable = KChannelConfig(label = "ch1", ordered = true, reliable = true)
         val reliableParams = reliable.toControlParams()
         assertEquals(true, reliableParams.ordered)
         assertEquals(null, reliableParams.maxRetransmitsOrNull)
 
-        val unreliable = ChannelConfig(label = "ch2", ordered = false, reliable = false)
+        val unreliable = KChannelConfig(label = "ch2", ordered = false, reliable = false)
         val unreliableParams = unreliable.toControlParams()
         assertEquals(false, unreliableParams.ordered)
         assertEquals(0, unreliableParams.maxRetransmitsOrNull)
