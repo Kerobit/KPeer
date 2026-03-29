@@ -169,17 +169,16 @@ Supported signaling payloads are:
 `KPeer` can reduce the burst of `KPeerIceCandidate` messages by batching *outgoing* local ICE candidates.
 It also can buffer *incoming* remote ICE candidates until the remote description is set (which makes delivery order less important).
 
-Configure it via `KPeerConfig.signaling`:
+Configure it via `KPeerConfig.iceCandidateEmitPolicy`:
 
 ```kotlin
 val peer = KPeer(
     context = KPeerContext(scope = scope, platformContext = androidContext),
     config = KPeerConfig(
         initiator = true,
-        signaling = SignalingConfig(
-            flushInterval = 50L,          // ms (0 disables batching)
-            maxBatchSize = null,         // per-batch limit
-            bufferRemoteIceUntilDescription = true
+        iceCandidateEmitPolicy = KIceCandidateEmitPolicy(
+            flushInterval = 50L,   // ms (0 disables batching)
+            maxBatchSize = null    // per-batch limit (null = only bounded by flushInterval)
         )
     )
 )

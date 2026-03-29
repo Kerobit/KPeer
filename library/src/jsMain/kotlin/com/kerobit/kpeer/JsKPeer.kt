@@ -117,7 +117,7 @@ object KPeerJs {
         val config = KPeerConfig(
             initiator = initiator,
             iceServers = if (servers.isEmpty()) KPeerConfig.defaultIceServers() else servers,
-            signaling = SignalingConfig(
+            iceCandidateEmitPolicy = KIceCandidateEmitPolicy(
                 flushInterval = flushInterval,
                 maxBatchSize = maxBatchSize
             )

@@ -40,8 +40,8 @@ internal class KSignaler(
         connection.startConnect()
         if (signalingJob == null) {
             signalingJob = context.scope.launch {
-                val signalingCfg = config.signaling
-                val flushIntervalMs = signalingCfg.flushInterval
+                val emitPolicy = config.iceCandidateEmitPolicy
+                val flushIntervalMs = emitPolicy.flushInterval
 
                 // No batching: emit every candidate as soon as it is generated.
                 if (flushIntervalMs <= 0L) {
@@ -71,7 +71,7 @@ internal class KSignaler(
                 }
 
                 connection.localIceCandidates.collect { candidate ->
-                    val maxBatchSize = signalingCfg.maxBatchSize
+                    val maxBatchSize = emitPolicy.maxBatchSize
 
                     var timerToCancel: Job? = null
                     var flushNow = false
