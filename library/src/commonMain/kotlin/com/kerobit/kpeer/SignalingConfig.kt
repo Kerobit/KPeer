@@ -7,16 +7,16 @@ package com.kerobit.kpeer
  * - batch outgoing ICE candidates to avoid bursts
  * - buffering of remote ICE candidates (before remote description is set) is handled internally by the transport layer
  */
-public data class SignalingConfig(
+data class SignalingConfig(
     /**
      * Flush cadence for outgoing ICE batching (ms).
      * Set to `0` to effectively emit candidates immediately (no batching).
      */
-    public val flushInterval: Long = 50L,
+    val flushInterval: Long = 50L,
     /**
      * Max candidates per batch. When null, batches are only bounded by `flushInterval`.
      */
-    public val maxBatchSize: Int? = null,
+    val maxBatchSize: Int? = null,
 ) {
     init {
         require(flushInterval >= 0L) { "flushInterval must be >= 0" }

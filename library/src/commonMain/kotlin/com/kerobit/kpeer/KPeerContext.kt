@@ -11,16 +11,16 @@ import kotlinx.coroutines.cancel
  *
  * When no scope is provided, KPeer creates an internal one that can later be disposed safely.
  */
-public class KPeerContext(
+class KPeerContext(
     scope: CoroutineScope? = null,
-    public val platformContext: Any? = null
+    val platformContext: Any? = null
 ) {
     private val ownsScope: Boolean = scope == null
 
-    public val scope: CoroutineScope = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val scope: CoroutineScope = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /** Cancels only the internally created scope, never a scope supplied by the caller. */
-    public fun dispose() {
+    fun dispose() {
         if (ownsScope) {
             scope.cancel()
         }

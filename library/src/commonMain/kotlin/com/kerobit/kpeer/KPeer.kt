@@ -11,7 +11,7 @@ import kotlinx.coroutines.launch
 /**
  * Simple-peer style API: signaling + data channels. No media, no protocol layer.
  */
-public class KPeer(
+class KPeer(
     private val context: KPeerContext,
     private val config: KPeerConfig,
     private val logger: KPeerLogger = NoOpKPeerLogger
@@ -28,10 +28,10 @@ public class KPeer(
     )
 
     private val _signals = MutableSharedFlow<KPeerSignal>(extraBufferCapacity = 64)
-    public val signals: Flow<KPeerSignal> = _signals.asSharedFlow()
+    val signals: Flow<KPeerSignal> = _signals.asSharedFlow()
     private val _channels = MutableSharedFlow<KChannel>(extraBufferCapacity = 16)
     /** Emits each channel once when it becomes visible to this peer. */
-    public val channels: Flow<KChannel> = _channels.asSharedFlow()
+    val channels: Flow<KChannel> = _channels.asSharedFlow()
     private val signaler = KSignaler(
         context = context,
         config = config,
@@ -40,10 +40,10 @@ public class KPeer(
         signalsSink = _signals
     )
 
-    public val connectionState: Flow<KPeerConnectionState> = connection.connectionState
+    val connectionState: Flow<KPeerConnectionState> = connection.connectionState
 
     /** Returns a typed snapshot of RTCPeerConnection stats (platform-dependent keys in values). */
-    public suspend fun getStats(): KPeerStatsReport = connection.getStats()
+    suspend fun getStats(): KPeerStatsReport = connection.getStats()
 
     private val channelsByLabel = linkedMapOf<String, KChannel>()
     private val emittedChannels = mutableSetOf<String>()
@@ -81,7 +81,7 @@ public class KPeer(
     }
 
     /** Creates or returns a data channel attached to the current peer connection. */
-    public suspend fun createChannel(config: KChannelConfig): KChannel? {
+    suspend fun createChannel(config: KChannelConfig): KChannel? {
         // simple-peer semantics: only the initiator creates data channels.
         // The answering side must wait for the remote-created channel via ondatachannel/onChannel.
         if (!this.config.initiator) {
@@ -103,10 +103,10 @@ public class KPeer(
     }
 
     /** Applies a signaling message received from the remote peer. */
-    public suspend fun signal(remote: KPeerSignal) = signaler.handleSignal(remote)
+    suspend fun signal(remote: KPeerSignal) = signaler.handleSignal(remote)
 
     /** Registers a callback for outgoing signaling messages. */
-    public fun onSignal(handler: (KPeerSignal) -> Unit): KSubscription {
+    fun onSignal(handler: (KPeerSignal) -> Unit): KSubscription {
         val job = context.scope.launch {
             signals.collect(handler)
         }
@@ -114,7 +114,7 @@ public class KPeer(
     }
 
     /** Registers a callback for discovered channels. */
-    public fun onChannel(handler: (KChannel) -> Unit): KSubscription {
+    fun onChannel(handler: (KChannel) -> Unit): KSubscription {
         val job = context.scope.launch {
             channels.collect(handler)
         }
@@ -122,7 +122,7 @@ public class KPeer(
     }
 
     /** Registers a callback for peer connection state changes. */
-    public fun onConnectionState(handler: (KPeerConnectionState) -> Unit): KSubscription {
+    fun onConnectionState(handler: (KPeerConnectionState) -> Unit): KSubscription {
         val job = context.scope.launch {
             connectionState.collect(handler)
         }
@@ -130,13 +130,13 @@ public class KPeer(
     }
 
     /** Closes the peer connection but does not dispose caller-owned resources. */
-    public fun close() {
+    fun close() {
         connection.close()
         signaler.close()
     }
 
     /** Closes the peer connection and disposes internal resources owned by KPeer. */
-    public fun dispose() {
+    fun dispose() {
         close()
         context.dispose()
     }

@@ -18,23 +18,23 @@ import kotlin.js.json
  *   - { type: "ice", candidate: "...", sdpMid: "...", sdpMLineIndex: 0 }
  */
 @JsExport
-public class JsKPeer(
+class JsKPeer(
     private val peer: KPeer,
     private val scope: CoroutineScope = MainScope()
 ) {
-    public fun onSignal(handler: (Json) -> Unit) {
+    fun onSignal(handler: (Json) -> Unit) {
         peer.onSignal { s -> handler(signalToJson(s)) }
     }
 
-    public fun onConnectionState(handler: (String) -> Unit) {
+    fun onConnectionState(handler: (String) -> Unit) {
         peer.onConnectionState { st -> handler(st.name.lowercase()) }
     }
 
-    public fun onChannel(handler: (JsKChannel) -> Unit) {
+    fun onChannel(handler: (JsKChannel) -> Unit) {
         peer.onChannel { ch -> handler(JsKChannel(ch, scope)) }
     }
 
-    public fun signal(signal: Json) {
+    fun signal(signal: Json) {
         scope.launch {
             peer.signal(jsonToSignal(signal))
         }
@@ -45,17 +45,17 @@ public class JsKPeer(
      *
      * The created channel will be delivered via [onChannel]. This method is fire-and-forget.
      */
-    public fun createChannel(label: String) {
+    fun createChannel(label: String) {
         scope.launch {
             peer.createChannel(KChannelConfig(label = label))
         }
     }
 
-    public fun close() {
+    fun close() {
         peer.close()
     }
 
-    public fun dispose() {
+    fun dispose() {
         peer.dispose()
     }
 
@@ -64,7 +64,7 @@ public class JsKPeer(
      *
      * Note: this is intentionally callback-based (not suspend) to keep JS interop simple.
      */
-    public fun getStatsJson(handler: (String) -> Unit) {
+    fun getStatsJson(handler: (String) -> Unit) {
         scope.launch {
             val report = peer.getStats()
             handler(statsReportToJson(report))
@@ -73,34 +73,34 @@ public class JsKPeer(
 }
 
 @JsExport
-public class JsKChannel(
+class JsKChannel(
     private val channel: KChannel,
     private val scope: CoroutineScope
 ) {
-    public val label: String get() = channel.label
+    val label: String get() = channel.label
 
-    public fun onText(handler: (String) -> Unit) {
+    fun onText(handler: (String) -> Unit) {
         channel.onText(handler)
     }
 
-    public fun sendText(text: String): Boolean = channel.send(text)
+    fun sendText(text: String): Boolean = channel.send(text)
 
-    public fun bufferedAmount(): Long = channel.currentBufferedAmount
+    fun bufferedAmount(): Long = channel.currentBufferedAmount
 
-    public fun close() {
+    fun close() {
         channel.close()
     }
 }
 
 @JsExport
-public object KPeerJs {
+object KPeerJs {
     /**
      * Creates a JS-friendly peer instance.
      *
      * Pass `iceServers` as an array of objects:
      * - { url: "stun:...", username: "...", credential: "..." }
      */
-    public fun createPeer(
+    fun createPeer(
         initiator: Boolean,
         iceServers: Array<dynamic> = emptyArray(),
         flushInterval: Long = 50L,
