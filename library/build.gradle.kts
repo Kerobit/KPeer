@@ -1,4 +1,3 @@
-import com.android.build.api.dsl.androidLibrary
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFramework
 
@@ -19,7 +18,6 @@ base {
 val jsModuleName = "kpeer"
 val cocoaPodName = "KerobitKPeer"
 val appleFrameworkName = "KerobitKPeer"
-val webRtcXcframeworkBasePath = "cocoapods/synthetic/ios/Pods/WebRTC-SDK/WebRTC.xcframework"
 
 kotlin {
     jvm()
@@ -28,7 +26,7 @@ kotlin {
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
 
-        withJava() // enable java compilation support
+        withJava()
         withHostTestBuilder {}.configure {}
         withDeviceTestBuilder {
             sourceSetTreeName = "test"
@@ -60,9 +58,6 @@ kotlin {
                 output?.library = jsModuleName
             }
         }
-        // - library(): publishable artifact (npm-style, may be split into multiple files)
-        // - executable(): webpack bundle for easy <script> usage (single output file in build/distributions)
-        //binaries.library()
         binaries.executable()
     }
 
@@ -71,7 +66,7 @@ kotlin {
         name = cocoaPodName
         homepage = "https://kerobit.com"
         version = "1.0.0"
-        ios.deploymentTarget = "16.0"
+        ios.deploymentTarget = "17.0"
         pod("WebRTC-SDK") {
             version = "~> 144.7559.01"
             moduleName = "WebRTC"
@@ -87,24 +82,6 @@ kotlin {
             baseName = appleFrameworkName
             isStatic = true
             xcf.add(this)
-        }
-
-        val webRtcSlice = when (target.name) {
-            "iosArm64" -> "ios-arm64"
-            "iosX64", "iosSimulatorArm64" -> "ios-arm64_x86_64-simulator"
-            else -> null
-        }
-
-        if (webRtcSlice != null) {
-            target.compilations.getByName("main").cinterops.named("WebRTC") {
-                val frameworkDir = layout.buildDirectory
-                    .dir("$webRtcXcframeworkBasePath/$webRtcSlice")
-                    .get()
-                    .asFile
-                    .absolutePath
-
-                compilerOpts("-F$frameworkDir")
-            }
         }
     }
 
@@ -132,21 +109,6 @@ kotlin {
         }
     }
 }
-
-// Gradle task validation: some JS packaging tasks consume outputs from compileSync tasks.
-// Newer Gradle versions require explicit task dependencies to avoid implicit dependency warnings/errors.
-// val jsProductionLibraryCompileSyncTask = "jsProductionLibraryCompileSync"
-// val jsProductionExecutableCompileSyncTask = "jsProductionExecutableCompileSync"
-
-// tasks.matching { it.name == "jsBrowserProductionWebpack" || it.name == "jsBrowserDevelopmentWebpack" }.configureEach {
-//     dependsOn(jsProductionLibraryCompileSyncTask)
-// }
-
-// tasks.matching {
-//     it.name == "jsBrowserProductionLibraryDistribution" || it.name == "jsBrowserDevelopmentLibraryDistribution"
-// }.configureEach {
-//     dependsOn(jsProductionExecutableCompileSyncTask)
-// }
 
 mavenPublishing {
     publishToMavenCentral()

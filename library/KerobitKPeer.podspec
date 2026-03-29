@@ -8,7 +8,7 @@ Pod::Spec.new do |spec|
     spec.summary                  = 'KPeer - simple WebRTC data channel peer for Kotlin Multiplatform'
     spec.vendored_frameworks      = 'build/cocoapods/framework/KerobitKPeer.framework'
     spec.libraries                = 'c++'
-    spec.ios.deployment_target    = '16.0'
+    spec.ios.deployment_target    = '17.0'
     spec.dependency 'WebRTC-SDK', '~> 144.7559.01'
     if !Dir.exist?('build/cocoapods/framework/KerobitKPeer.framework') || Dir.empty?('build/cocoapods/framework/KerobitKPeer.framework')
         raise "
