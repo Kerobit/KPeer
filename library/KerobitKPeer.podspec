@@ -9,6 +9,7 @@ Pod::Spec.new do |spec|
     spec.vendored_frameworks      = 'build/cocoapods/framework/KerobitKPeer.framework'
     spec.libraries                = 'c++'
     spec.ios.deployment_target    = '17.0'
+    spec.osx.deployment_target    = '11.0'
     spec.dependency 'WebRTC-SDK', '~> 144.7559.01'
     if !Dir.exist?('build/cocoapods/framework/KerobitKPeer.framework') || Dir.empty?('build/cocoapods/framework/KerobitKPeer.framework')
         raise "

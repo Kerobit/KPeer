@@ -20,6 +20,8 @@ val cocoaPodName = "KerobitKPeer"
 val appleFrameworkName = "KerobitKPeer"
 
 kotlin {
+    applyDefaultHierarchyTemplate()
+
     jvm()
     androidLibrary {
         namespace = "com.kerobit.kpeer"
@@ -45,7 +47,9 @@ kotlin {
         iosArm64(),
         iosSimulatorArm64()
     )
+    val macosArm64 = macosArm64()
     linuxX64()
+    mingwX64()
 
     val xcf = XCFramework(appleFrameworkName)
 
@@ -67,6 +71,7 @@ kotlin {
         homepage = "https://kerobit.com"
         version = "1.0.0"
         ios.deploymentTarget = "17.0"
+        osx.deploymentTarget = "11.0"
         pod("WebRTC-SDK") {
             version = "~> 144.7559.01"
             moduleName = "WebRTC"
@@ -77,7 +82,7 @@ kotlin {
         }
     }
 
-    iosTargets.forEach { target ->
+    (iosTargets + listOf(macosArm64)).forEach { target ->
         target.binaries.framework {
             baseName = appleFrameworkName
             isStatic = true
