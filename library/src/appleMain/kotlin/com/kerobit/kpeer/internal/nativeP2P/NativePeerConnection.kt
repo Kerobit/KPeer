@@ -235,8 +235,7 @@ internal actual class NativePeerConnection actual constructor(
             controlParams.maxRetransmitsOrNull?.let { maxRetransmits = it }
         }
         return peerConnection.dataChannelForLabel(config.label, configuration = controlConfig)?.let { dc ->
-            // iOS support for bufferedAmountLowThreshold varies by WebRTC build.
-            // If the property is not available, the threshold is ignored.
+            // Apple platforms: bufferedAmountLowThreshold support varies by WebRTC build.
             NativeDataChannel(dc)
         }
     }
