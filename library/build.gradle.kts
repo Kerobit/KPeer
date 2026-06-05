@@ -23,7 +23,7 @@ kotlin {
     applyDefaultHierarchyTemplate()
 
     jvm()
-    androidLibrary {
+    android {
         namespace = "com.kerobit.kpeer"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
@@ -34,12 +34,10 @@ kotlin {
             sourceSetTreeName = "test"
         }
 
-        compilations.configureEach {
-            compilerOptions.configure {
-                jvmTarget.set(
-                    JvmTarget.JVM_11
-                )
-            }
+        compilerOptions {
+            jvmTarget.set(
+                JvmTarget.JVM_11
+            )
         }
     }
     val iosTargets = listOf(
@@ -125,10 +123,10 @@ mavenPublishing {
     pom {
         name = "KPeer"
         description = "KPeer - simple WebRTC data channel peer for Kotlin Multiplatform"
-        inceptionYear = "2024"
+        inceptionYear = "2025"
         licenses {
             license {
-                name = "Proprietary"
+                name = "MPL2.0"
             }
         }
         developers {
