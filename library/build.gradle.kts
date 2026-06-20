@@ -104,7 +104,7 @@ kotlin {
         }
 
         androidMain.dependencies {
-            implementation("io.getstream:stream-webrtc-android:1.1.1")
+            implementation("io.getstream:stream-webrtc-android:1.3.10")
         }
 
         commonTest.dependencies {

@@ -28,6 +28,7 @@ class KChannel internal constructor(
     private val _bufferedAmount = MutableStateFlow(0L)
 
     val state: Flow<KChannelState> = _state
+    val currentState: KChannelState get() = _state.value
     /** Number of bytes currently queued for sending on the underlying transport. */
     val bufferedAmount: Flow<Long> = _bufferedAmount
     /** Latest known buffered amount value. */
