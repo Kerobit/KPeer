@@ -2,6 +2,7 @@ package com.kerobit.kpeer
 
 import com.kerobit.kpeer.internal.KPeerConnection
 import com.kerobit.kpeer.internal.KPeerTransportEvent
+import com.kerobit.kpeer.internal.nativeP2P.DataChannelState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.filter
@@ -24,7 +25,10 @@ class KChannel internal constructor(
     val label: String,
     private val connection: KPeerConnection
 ) {
-    private val _state = MutableStateFlow(KChannelState.CONNECTING)
+    // `DataChannelAvailable` and `DataChannelOpen` are separate events. Seed
+    // the wrapper from the native channel too, so an OPEN event that happens
+    // between those two events cannot leave this channel stuck at CONNECTING.
+    private val _state = MutableStateFlow(connection.getDataChannel(label)?.currentState.toKChannelState())
     private val _bufferedAmount = MutableStateFlow(0L)
 
     val state: Flow<KChannelState> = _state
@@ -110,4 +114,12 @@ class KChannel internal constructor(
         _state.value = KChannelState.CLOSING
         connection.closeDataChannel(label)
     }
+}
+
+private fun DataChannelState?.toKChannelState(): KChannelState = when (this) {
+    DataChannelState.OPEN -> KChannelState.OPEN
+    DataChannelState.CLOSING -> KChannelState.CLOSING
+    DataChannelState.CLOSED -> KChannelState.CLOSED
+    DataChannelState.CONNECTING,
+    null -> KChannelState.CONNECTING
 }
