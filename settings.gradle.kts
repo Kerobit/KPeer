@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 rootProject.name = "kpeer"
 include(":library")
 project(":library").name = "kpeer"
+include(":kquic")
