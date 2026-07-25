@@ -4,8 +4,12 @@ import javax.crypto.Cipher
 import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import java.security.MessageDigest
 
 internal object AndroidQuicCryptoPrimitives : QuicCryptoPrimitives {
+    override fun sha256(data: ByteArray): ByteArray =
+        MessageDigest.getInstance("SHA-256").digest(data)
+
     override fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray =
         Mac.getInstance("HmacSHA256").run {
             init(SecretKeySpec(key, "HmacSHA256"))

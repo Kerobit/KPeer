@@ -6,11 +6,49 @@ import kotlinx.coroutines.flow.Flow
 @RequiresOptIn(level = RequiresOptIn.Level.WARNING)
 annotation class ExperimentalKQuicApi
 
-/** Credentials consumed by the TLS 1.3 handshake. Their issuance is owned by the integrator. */
-data class KQuicCredentials(
+enum class KQuicSignatureAlgorithm {
+    ECDSA_SECP256R1_SHA256
+}
+
+/**
+ * Performs CertificateVerify without requiring an exportable private key.
+ *
+ * Android Keystore and Apple Keychain implementations can keep key material in the platform
+ * provider and expose only this operation.
+ */
+fun interface KQuicSigner {
+    suspend fun sign(
+        algorithm: KQuicSignatureAlgorithm,
+        message: ByteArray
+    ): ByteArray
+}
+
+/** Identity presented by the mutual TLS 1.3 handshake. */
+class KQuicIdentity private constructor(
     val certificateChainDer: List<ByteArray>,
-    val privateKeyHandle: String
-)
+    val signer: KQuicSigner,
+    internal val cachedPublicKeySha256: String?
+) {
+    constructor(
+        certificateChainDer: List<ByteArray>,
+        signer: KQuicSigner
+    ) : this(certificateChainDer, signer, null)
+
+    init {
+        require(certificateChainDer.isNotEmpty())
+        require(cachedPublicKeySha256 == null || cachedPublicKeySha256.isSha256Hex()) {
+            "publicKeySha256 must contain 64 lower-case hexadecimal characters"
+        }
+    }
+
+    internal companion object {
+        fun platformGenerated(
+            certificateChainDer: List<ByteArray>,
+            signer: KQuicSigner,
+            publicKeySha256: String
+        ): KQuicIdentity = KQuicIdentity(certificateChainDer, signer, publicKeySha256)
+    }
+}
 
 data class KQuicHandshakeRequest(
     val rendezvousId: String,
@@ -19,8 +57,16 @@ data class KQuicHandshakeRequest(
 
 data class KQuicRemoteIdentity(
     val certificateChainDer: List<ByteArray>,
+    val publicKeySha256: String,
     val serverName: String? = null
-)
+) {
+    init {
+        require(certificateChainDer.isNotEmpty())
+        require(publicKeySha256.isSha256Hex()) {
+            "publicKeySha256 must contain 64 lower-case hexadecimal characters"
+        }
+    }
+}
 
 sealed interface KQuicVerificationResult {
     data object Accepted : KQuicVerificationResult
@@ -28,13 +74,32 @@ sealed interface KQuicVerificationResult {
 }
 
 /** Supplies TLS material without coupling KQuic to an identity or matchmaking system. */
-fun interface KQuicCredentialsProvider {
-    suspend fun credentialsFor(request: KQuicHandshakeRequest): KQuicCredentials
+fun interface KQuicIdentityProvider {
+    suspend fun identityFor(request: KQuicHandshakeRequest): KQuicIdentity
 }
 
 /** Decides whether the certificate chain presented by the remote QUIC peer is trusted. */
 fun interface KQuicPeerVerifier {
     suspend fun verify(identity: KQuicRemoteIdentity): KQuicVerificationResult
+}
+
+sealed interface KQuicSecurity {
+    class Explicit(
+        val identityProvider: KQuicIdentityProvider,
+        val peerVerifier: KQuicPeerVerifier
+    ) : KQuicSecurity
+
+    /**
+     * Generates an ephemeral platform identity and pins the fingerprint carried by signaling.
+     *
+     * This mode is secure only when the application's signaling channel is authenticated.
+     */
+    data object EphemeralAuthenticatedSignaling : KQuicSecurity
+
+    companion object {
+        fun ephemeralWithAuthenticatedSignaling(): KQuicSecurity =
+            EphemeralAuthenticatedSignaling
+    }
 }
 
 /** Produces host, server-reflexive, or relay candidates as they become available. */
@@ -50,7 +115,10 @@ data class KQuicLimits(
     val maxMessageSize: Int = 262_144,
     val maxChannelLabelBytes: Int = 256,
     val maxDatagramSize: Int = 1_200,
-    val maxBufferedPackets: Int = 1_024
+    val maxBufferedPackets: Int = 1_024,
+    val maxBufferedCryptoBytes: Int = 1_048_576,
+    val maxBufferedStreamBytes: Int = 262_144,
+    val maxSendQueueBytes: Int = 1_048_576
 ) {
     init {
         require(maxBidirectionalStreams >= 0)
@@ -61,6 +129,9 @@ data class KQuicLimits(
         require(maxChannelLabelBytes > 0)
         require(maxDatagramSize in 1..65_507)
         require(maxBufferedPackets > 0)
+        require(maxBufferedCryptoBytes > 0)
+        require(maxBufferedStreamBytes > 0)
+        require(maxSendQueueBytes > 0)
     }
 }
 
@@ -73,8 +144,8 @@ data class KQuicLimits(
 data class KQuicConfig(
     val initiator: Boolean,
     val rendezvousId: String,
-    val credentialsProvider: KQuicCredentialsProvider,
-    val peerVerifier: KQuicPeerVerifier,
+    val security: KQuicSecurity,
+    val gatherHostCandidates: Boolean = true,
     val candidateSources: List<KQuicCandidateSource> = emptyList(),
     val initialCandidates: List<KQuicCandidate> = emptyList(),
     val limits: KQuicLimits = KQuicLimits(),
@@ -87,3 +158,6 @@ data class KQuicConfig(
         require(idleTimeoutMs > 0)
     }
 }
+
+internal fun String.isSha256Hex(): Boolean =
+    length == 64 && all { it in '0'..'9' || it in 'a'..'f' }

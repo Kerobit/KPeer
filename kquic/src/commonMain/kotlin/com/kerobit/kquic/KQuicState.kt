@@ -4,6 +4,7 @@ enum class KQuicPeerConnectionState {
     NEW,
     GATHERING,
     CONNECTING,
+    AUTHENTICATING,
     CONNECTED,
     DISCONNECTED,
     FAILED,

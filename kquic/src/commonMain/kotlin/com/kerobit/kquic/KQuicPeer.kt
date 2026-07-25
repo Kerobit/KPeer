@@ -1,15 +1,23 @@
 package com.kerobit.kquic
 
 import com.kerobit.kquic.internal.KQuicCandidateSelector
+import com.kerobit.kquic.internal.extractSubjectPublicKeyInfo
+import com.kerobit.kquic.internal.toHex
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * P2P QUIC facade. The app forwards [signals] to the remote peer and passes received
@@ -20,7 +28,7 @@ class KQuicPeer(
     private val context: KQuicContext,
     private val config: KQuicConfig
 ) {
-    private val _signals = MutableSharedFlow<KQuicSignal>(extraBufferCapacity = 64)
+    private val _signals = MutableSharedFlow<KQuicSignal>(replay = 64, extraBufferCapacity = 64)
     private val _channels = MutableSharedFlow<KQuicChannel>(extraBufferCapacity = 16)
     private val _state = MutableStateFlow(KQuicPeerConnectionState.NEW)
     private val _stats = MutableStateFlow(KQuicStats())
@@ -28,10 +36,20 @@ class KQuicPeer(
     private val remoteCandidates = linkedSetOf<KQuicCandidate>()
     private val channelsByLabel = linkedMapOf<String, KQuicChannel>()
     private val emittedChannelLabels = mutableSetOf<String>()
+    private val attemptedCandidatePairs = mutableSetOf<KQuicCandidatePair>()
     private val gatheringJobs = mutableListOf<Job>()
+    private val stateMutex = Mutex()
     private val transport = context.transportFactory.create(config)
     private val transportEventsJob: Job
+    private val identityReady = CompletableDeferred<KQuicIdentity>()
     private var connectionJob: Job? = null
+    private var identityAndGatheringJob: Job? = null
+    private var localIdentityPublicKeySha256: String? = null
+    private var remoteIdentityPublicKeySha256: String? = null
+    private var localSignalSent = false
+    private var localGatheringComplete = false
+    private var remoteGatheringComplete = false
+    private var lastConnectionError: KQuicError? = null
     private var started = false
     private var closed = false
 
@@ -43,7 +61,11 @@ class KQuicPeer(
 
     init {
         transportEventsJob = context.scope.launch {
-            transport.events.collect(::handleTransportEvent)
+            transport.events.collect { event ->
+                stateMutex.withLock {
+                    handleTransportEvent(event)
+                }
+            }
         }
     }
 
@@ -53,13 +75,55 @@ class KQuicPeer(
         _state.value = KQuicPeerConnectionState.GATHERING
         localCandidates += config.initialCandidates
         started = true
-        config.candidateSources.forEach { source ->
-            gatheringJobs += context.scope.launch {
-                source.candidates().collect(::addLocalCandidate)
+        identityAndGatheringJob = context.scope.launch {
+            try {
+                val identity = when (val security = config.security) {
+                    is KQuicSecurity.Explicit -> security.identityProvider.identityFor(
+                        KQuicHandshakeRequest(config.rendezvousId, config.initiator)
+                    )
+                    KQuicSecurity.EphemeralAuthenticatedSignaling ->
+                        context.platformServices.ephemeralIdentityProvider.identityFor(
+                            KQuicHandshakeRequest(config.rendezvousId, config.initiator)
+                        )
+                }
+                localIdentityPublicKeySha256 = identity.cachedPublicKeySha256
+                    ?: context.platformServices.sha256(
+                        extractSubjectPublicKeyInfo(identity.certificateChainDer.first())
+                    ).toHex()
+                identityReady.complete(identity)
+
+                if (config.initiator) {
+                    emitInitialSignal()
+                }
+
+                val sources = buildList {
+                    if (config.gatherHostCandidates) {
+                        context.platformServices.hostCandidateSource?.let(::add)
+                    }
+                    addAll(config.candidateSources)
+                }
+                coroutineScope {
+                    sources.map { source ->
+                        launch {
+                            source.candidates().collect(::addLocalCandidate)
+                        }.also(gatheringJobs::add)
+                    }.joinAll()
+                }
+                stateMutex.withLock {
+                    localGatheringComplete = true
+                    if (localSignalSent) {
+                        emitCandidateSnapshot()
+                        _signals.emit(KQuicEndOfCandidates(config.rendezvousId))
+                    }
+                    selectCandidatePairLocked()
+                    failIfCandidatePairsExhaustedLocked()
+                }
+            } catch (error: CancellationException) {
+                if (!closed) throw error
+            } catch (error: Throwable) {
+                if (!identityReady.isCompleted) identityReady.completeExceptionally(error)
+                fail(error.toKQuicError("Failed to initialize KQuic identity or candidates"))
             }
-        }
-        if (config.initiator) {
-            _signals.tryEmit(KQuicOffer(config.rendezvousId, localCandidates.toList()))
         }
     }
 
@@ -70,20 +134,42 @@ class KQuicPeer(
             throw KQuicError.InvalidSignal("Signal rendezvousId does not match this peer")
         }
         if (!started) start()
-        when (remote) {
-            is KQuicOffer -> {
-                if (config.initiator) throw KQuicError.InvalidSignal("Initiator received a KQuicOffer")
-                remote.candidates.forEach(::addRemoteCandidate)
-                _signals.emit(KQuicAnswer(config.rendezvousId, localCandidates.toList()))
+        stateMutex.withLock {
+            when (remote) {
+                is KQuicOffer -> {
+                    if (config.initiator) throw KQuicError.InvalidSignal("Initiator received a KQuicOffer")
+                    setRemoteIdentityFingerprint(remote.identityPublicKeySha256)
+                    remote.candidates.forEach(::addRemoteCandidateLocked)
+                    remoteGatheringComplete = remote.endOfCandidates
+                    val identity = identityReady.await()
+                    _signals.emit(
+                        KQuicAnswer(
+                            rendezvousId = config.rendezvousId,
+                            candidates = localCandidates.toList(),
+                            identityPublicKeySha256 = checkNotNull(localIdentityPublicKeySha256),
+                            endOfCandidates = localGatheringComplete
+                        )
+                    )
+                    localSignalSent = true
+                    if (localGatheringComplete) {
+                        _signals.emit(KQuicEndOfCandidates(config.rendezvousId))
+                    }
+                }
+                is KQuicAnswer -> {
+                    if (!config.initiator) throw KQuicError.InvalidSignal("Responder received a KQuicAnswer")
+                    setRemoteIdentityFingerprint(remote.identityPublicKeySha256)
+                    remote.candidates.forEach(::addRemoteCandidateLocked)
+                    remoteGatheringComplete = remote.endOfCandidates
+                }
+                is KQuicCandidateUpdate -> {
+                    remote.candidates.forEach(::addRemoteCandidateLocked)
+                    if (remote.endOfCandidates) remoteGatheringComplete = true
+                }
+                is KQuicEndOfCandidates -> remoteGatheringComplete = true
             }
-            is KQuicAnswer -> {
-                if (!config.initiator) throw KQuicError.InvalidSignal("Responder received a KQuicAnswer")
-                remote.candidates.forEach(::addRemoteCandidate)
-            }
-            is KQuicCandidateUpdate -> addRemoteCandidate(remote.candidate)
-            is KQuicEndOfCandidates -> selectCandidatePair()
+            selectCandidatePairLocked()
+            failIfCandidatePairsExhaustedLocked()
         }
-        selectCandidatePair()
     }
 
     /** Creates a logical channel once the platform QUIC handshake confirms the connection. */
@@ -116,11 +202,13 @@ class KQuicPeer(
     fun onChannel(handler: (KQuicChannel) -> Unit): KQuicSubscription = subscribe(channels, handler)
     fun onConnectionState(handler: (KQuicPeerConnectionState) -> Unit): KQuicSubscription =
         subscribe(connectionState, handler)
+    fun onStats(handler: (KQuicStats) -> Unit): KQuicSubscription = subscribe(stats, handler)
 
     fun close() {
         if (closed) return
         closed = true
         gatheringJobs.forEach { it.cancel() }
+        identityAndGatheringJob?.cancel()
         connectionJob?.cancel()
         transportEventsJob.cancel()
         channelsByLabel.values.forEach { it.markClosed() }
@@ -128,15 +216,28 @@ class KQuicPeer(
         _state.value = KQuicPeerConnectionState.CLOSED
     }
 
-    /** Called by the platform packet driver before serializing the TLS Certificate message. */
-    internal suspend fun localCredentials(): KQuicCredentials = config.credentialsProvider.credentialsFor(
-        KQuicHandshakeRequest(config.rendezvousId, config.initiator)
-    )
+    fun dispose() {
+        close()
+        context.dispose()
+    }
 
     /** Called only after TLS Finished and the remote QUIC transport parameters validate. */
     private suspend fun confirmHandshake(pair: KQuicCandidatePair, remoteIdentity: KQuicRemoteIdentity) {
         if (closed) return
-        when (val verification = config.peerVerifier.verify(remoteIdentity)) {
+        val verification = when (val security = config.security) {
+            is KQuicSecurity.Explicit -> security.peerVerifier.verify(remoteIdentity)
+            KQuicSecurity.EphemeralAuthenticatedSignaling -> {
+                val expected = remoteIdentityPublicKeySha256
+                if (expected != null && expected == remoteIdentity.publicKeySha256) {
+                    KQuicVerificationResult.Accepted
+                } else {
+                    KQuicVerificationResult.Rejected(
+                        "Remote public-key fingerprint does not match authenticated signaling"
+                    )
+                }
+            }
+        }
+        when (verification) {
             KQuicVerificationResult.Accepted -> Unit
             is KQuicVerificationResult.Rejected -> {
                 fail(KQuicError.AuthenticationFailed(verification.reason))
@@ -150,6 +251,7 @@ class KQuicPeer(
     internal fun fail(error: KQuicError) {
         if (closed || _state.value == KQuicPeerConnectionState.FAILED) return
         gatheringJobs.forEach { it.cancel() }
+        identityAndGatheringJob?.cancel()
         connectionJob?.cancel()
         transportEventsJob.cancel()
         channelsByLabel.values.forEach { it.markClosed() }
@@ -158,39 +260,72 @@ class KQuicPeer(
         _state.value = KQuicPeerConnectionState.FAILED
     }
 
-    private fun addLocalCandidate(candidate: KQuicCandidate) {
-        if (localCandidates.add(candidate) && started) {
-            _signals.tryEmit(KQuicCandidateUpdate(config.rendezvousId, candidate))
+    private suspend fun addLocalCandidate(candidate: KQuicCandidate) {
+        stateMutex.withLock {
+            if (localCandidates.add(candidate) && started) {
+                if (localSignalSent) emitCandidateSnapshot()
+                selectCandidatePairLocked()
+            }
         }
     }
 
-    private fun addRemoteCandidate(candidate: KQuicCandidate) {
+    private fun addRemoteCandidateLocked(candidate: KQuicCandidate) {
         remoteCandidates += candidate
     }
 
-    private fun selectCandidatePair() {
+    private fun selectCandidatePairLocked() {
         if (localCandidates.isEmpty() || remoteCandidates.isEmpty()) return
         if (connectionJob != null || _state.value == KQuicPeerConnectionState.CONNECTED) return
-        val selected = KQuicCandidateSelector.orderedPairs(localCandidates, remoteCandidates).firstOrNull()
+        val selected = KQuicCandidateSelector.orderedPairs(localCandidates, remoteCandidates)
+            .firstOrNull { it !in attemptedCandidatePairs }
             ?: return
+        attemptedCandidatePairs += selected
         _stats.value = _stats.value.copy(selectedCandidatePair = selected)
         _state.value = KQuicPeerConnectionState.CONNECTING
         connectionJob = context.scope.launch {
             try {
-                val credentials = localCredentials()
+                val identity = identityReady.await()
                 val remoteIdentity = config.connectionTimeoutMs?.let { timeoutMs ->
                     withTimeoutOrNull(timeoutMs) {
-                        transport.connect(selected, credentials)
+                        transport.connect(selected, identity, config.quicRole)
                     } ?: throw KQuicError.ConnectionTimedOut(timeoutMs)
-                } ?: transport.connect(selected, credentials)
-                confirmHandshake(selected, remoteIdentity)
+                } ?: transport.connect(selected, identity, config.quicRole)
+                stateMutex.withLock {
+                    _state.value = KQuicPeerConnectionState.AUTHENTICATING
+                    confirmHandshake(selected, remoteIdentity)
+                }
             } catch (error: KQuicError) {
-                fail(error)
+                candidateAttemptFailed(error)
             } catch (error: CancellationException) {
                 if (!closed) throw error
             } catch (error: Throwable) {
-                fail(KQuicError.TransportFailure(error.message ?: "QUIC transport failed"))
+                candidateAttemptFailed(
+                    KQuicError.TransportFailure(error.message ?: "QUIC transport failed")
+                )
             }
+        }
+    }
+
+    private suspend fun candidateAttemptFailed(error: KQuicError) {
+        stateMutex.withLock {
+            if (closed) return
+            lastConnectionError = error
+            connectionJob = null
+            if (error is KQuicError.ConnectionTimedOut) {
+                fail(error)
+                return
+            }
+            selectCandidatePairLocked()
+            failIfCandidatePairsExhaustedLocked()
+        }
+    }
+
+    private fun failIfCandidatePairsExhaustedLocked() {
+        if (!localGatheringComplete || !remoteGatheringComplete || connectionJob != null) return
+        val hasUntriedPair = KQuicCandidateSelector.orderedPairs(localCandidates, remoteCandidates)
+            .any { it !in attemptedCandidatePairs }
+        if (!hasUntriedPair && attemptedCandidatePairs.isNotEmpty()) {
+            fail(lastConnectionError ?: KQuicError.TransportFailure("No candidate pair connected"))
         }
     }
 
@@ -259,8 +394,12 @@ class KQuicPeer(
                     packetsReceived = event.stats.packetsReceived,
                     packetsLost = event.stats.packetsLost,
                     datagramsDropped = event.stats.datagramsDropped,
+                    minimumRttMs = event.stats.minimumRttMs,
                     smoothedRttMs = event.stats.smoothedRttMs,
+                    congestionWindowBytes = event.stats.congestionWindowBytes,
                     bytesInFlight = event.stats.bytesInFlight,
+                    ptoCount = event.stats.ptoCount,
+                    streamsBlocked = event.stats.streamsBlocked,
                     selectedCandidatePair = selectedPair,
                     closeReason = _stats.value.closeReason
                 )
@@ -281,7 +420,47 @@ class KQuicPeer(
     }
 
     private fun <T> subscribe(flow: Flow<T>, handler: (T) -> Unit): KQuicSubscription {
-        val job = context.scope.launch { flow.collect(handler) }
+        val job = context.scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            flow.collect(handler)
+        }
         return KQuicSubscription { job.cancel() }
     }
+
+    private fun emitInitialSignal() {
+        _signals.tryEmit(
+            KQuicOffer(
+                rendezvousId = config.rendezvousId,
+                candidates = localCandidates.toList(),
+                identityPublicKeySha256 = checkNotNull(localIdentityPublicKeySha256),
+                endOfCandidates = localGatheringComplete
+            )
+        )
+        localSignalSent = true
+    }
+
+    private suspend fun emitCandidateSnapshot() {
+        _signals.emit(
+            KQuicCandidateUpdate(
+                rendezvousId = config.rendezvousId,
+                candidates = localCandidates.toList(),
+                endOfCandidates = localGatheringComplete
+            )
+        )
+    }
+
+    private fun setRemoteIdentityFingerprint(value: String) {
+        val current = remoteIdentityPublicKeySha256
+        if (current != null && current != value) {
+            throw KQuicError.InvalidSignal("Remote identity fingerprint changed during rendezvous")
+        }
+        remoteIdentityPublicKeySha256 = value
+    }
+
+    private fun Throwable.toKQuicError(fallback: String): KQuicError = when (this) {
+        is KQuicError -> this
+        else -> KQuicError.TransportFailure(message ?: fallback)
+    }
+
+    private val KQuicConfig.quicRole: KQuicTransportRole
+        get() = if (initiator) KQuicTransportRole.CLIENT else KQuicTransportRole.SERVER
 }

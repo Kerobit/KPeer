@@ -40,17 +40,31 @@ sealed interface KQuicSignal {
 
 data class KQuicOffer(
     override val rendezvousId: String,
-    val candidates: List<KQuicCandidate>
-) : KQuicSignal
+    val candidates: List<KQuicCandidate>,
+    val identityPublicKeySha256: String,
+    val endOfCandidates: Boolean = false
+) : KQuicSignal {
+    init {
+        require(identityPublicKeySha256.isSha256Hex())
+    }
+}
 
 data class KQuicAnswer(
     override val rendezvousId: String,
-    val candidates: List<KQuicCandidate>
-) : KQuicSignal
+    val candidates: List<KQuicCandidate>,
+    val identityPublicKeySha256: String,
+    val endOfCandidates: Boolean = false
+) : KQuicSignal {
+    init {
+        require(identityPublicKeySha256.isSha256Hex())
+    }
+}
 
 data class KQuicCandidateUpdate(
     override val rendezvousId: String,
-    val candidate: KQuicCandidate
+    /** Complete snapshot, so losing an earlier trickle update cannot lose a candidate. */
+    val candidates: List<KQuicCandidate>,
+    val endOfCandidates: Boolean = false
 ) : KQuicSignal
 
 data class KQuicEndOfCandidates(

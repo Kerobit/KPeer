@@ -2,6 +2,7 @@ package com.kerobit.kquic.internal
 
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
+import kotlin.test.assertFailsWith
 
 class JvmQuicInitialCryptoTest {
     private val crypto = QuicInitialCrypto(JvmQuicCryptoPrimitives)
@@ -44,6 +45,93 @@ class JvmQuicInitialCryptoTest {
         val ciphertext = crypto.seal(keys, 2uL, header, plaintext)
 
         assertContentEquals(plaintext, crypto.open(keys, 2uL, header, ciphertext))
+    }
+
+    @Test
+    fun retry_integrity_rejects_a_modified_packet() {
+        val integrity = QuicRetryIntegrity(JvmQuicCryptoPrimitives)
+        val originalDestinationId = byteArrayOf(1, 2, 3, 4)
+        val retryWithoutTag = byteArrayOf(0xf0.toByte(), 0, 0, 0, 1, 0, 0, 9, 8, 7)
+        val packet = retryWithoutTag + integrity.tag(originalDestinationId, retryWithoutTag)
+        integrity.validate(originalDestinationId, packet)
+
+        val modified = packet.copyOf().also { it[5] = (it[5].toInt() xor 1).toByte() }
+        assertFailsWith<IllegalStateException> {
+            integrity.validate(originalDestinationId, modified)
+        }
+    }
+
+    @Test
+    fun complete_initial_and_short_packet_pipeline_roundTrips() {
+        val protection = QuicPacketProtection(JvmQuicCryptoPrimitives)
+        val clientKeys = crypto.derive(destinationConnectionId, QuicInitialRole.CLIENT)
+        val initialPlaintext = QuicFrames.encode(
+            QuicFrame.Crypto(0uL, byteArrayOf(1, 2, 3, 4))
+        )
+        val initial = protection.sealLong(
+            type = QuicLongPacketType.INITIAL,
+            destinationConnectionId = destinationConnectionId,
+            sourceConnectionId = byteArrayOf(7, 8, 9),
+            packetNumber = 2uL,
+            packetNumberLength = 2,
+            plaintext = initialPlaintext,
+            keys = clientKeys
+        )
+        kotlin.test.assertEquals(1_200, initial.size)
+        val openedInitial = protection.openLong(initial, largestReceived = 1uL, keys = clientKeys)
+        kotlin.test.assertEquals(2uL, openedInitial.packetNumber)
+        val cryptoFrame = QuicFrames.decodeAll(openedInitial.plaintext)
+            .filterIsInstance<QuicFrame.Crypto>()
+            .single()
+        assertContentEquals(byteArrayOf(1, 2, 3, 4), cryptoFrame.data)
+
+        val oneRttKeys = QuicPacketProtectionKeys(
+            key = ByteArray(16) { it.toByte() },
+            iv = ByteArray(12) { (it + 16).toByte() },
+            headerProtectionKey = ByteArray(16) { (it + 32).toByte() }
+        )
+        val shortPlaintext = QuicFrames.encode(QuicFrame.Datagram(byteArrayOf(9, 8, 7)))
+        val short = protection.sealShort(
+            destinationConnectionId = byteArrayOf(4, 5, 6),
+            packetNumber = 42uL,
+            packetNumberLength = 2,
+            keyPhase = false,
+            plaintext = shortPlaintext,
+            keys = oneRttKeys
+        )
+        val openedShort = protection.openShort(
+            short,
+            destinationConnectionIdLength = 3,
+            largestReceived = 41uL,
+            keys = oneRttKeys
+        )
+        kotlin.test.assertEquals(42uL, openedShort.packetNumber)
+        val datagram = QuicFrames.decodeAll(openedShort.plaintext)
+            .filterIsInstance<QuicFrame.Datagram>()
+            .single()
+        assertContentEquals(byteArrayOf(9, 8, 7), datagram.data)
+    }
+
+    @Test
+    fun packet_pipeline_rejects_ciphertext_corruption() {
+        val protection = QuicPacketProtection(JvmQuicCryptoPrimitives)
+        val keys = crypto.derive(destinationConnectionId, QuicInitialRole.CLIENT)
+        val packet = protection.sealLong(
+            type = QuicLongPacketType.HANDSHAKE,
+            destinationConnectionId = destinationConnectionId,
+            sourceConnectionId = byteArrayOf(7),
+            packetNumber = 1uL,
+            packetNumberLength = 2,
+            plaintext = QuicFrames.encode(QuicFrame.Ping),
+            keys = keys,
+            padInitialDatagram = false
+        )
+        val corrupted = packet.copyOf().also {
+            it[it.lastIndex] = (it.last().toInt() xor 1).toByte()
+        }
+        assertFailsWith<IllegalStateException> {
+            protection.openLong(corrupted, largestReceived = null, keys = keys)
+        }
     }
 
     private fun String.hex(): ByteArray {

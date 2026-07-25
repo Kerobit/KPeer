@@ -5,10 +5,19 @@ Este documento recoge lo necesario para pasar de la base actual de `:kquic` a un
 ## Base ya disponible
 
 - Módulo Gradle publicable `:kquic`, sin dependencia de WebRTC ni target JS.
-- API experimental: `KQuicPeer`, señales de rendezvous y candidatos, canales, estados, estadísticas, límites y proveedores de credenciales/verificación inyectables.
-- Códecs comunes para varints, parámetros de transporte y frames `ACK`, `CRYPTO`, `STREAM`, `DATAGRAM` y cierre.
-- Ledger básico de paquetes enviados y recuperación determinista.
-- Selección determinista inicial de pares de candidatos y tests multiplataforma del núcleo.
+- API experimental: `KQuicPeer`, señales de rendezvous con pin de identidad, canales, estados,
+  estadísticas, límites y `KQuicSecurity`.
+- Identidad efímera P-256/X.509 compartida, con generación/firma mediante JCA en Android y
+  Security.framework/CommonCrypto en Apple. `KQuicIdentity` no contiene handles de clave privada.
+- Códecs comunes para varints, parámetros de transporte tipados y frames `ACK`, `CRYPTO`, `STREAM`,
+  flow control, reset, `DATAGRAM`, `HANDSHAKE_DONE` y cierre.
+- Parsing de campos invariantes previo a retirar header protection, Version Negotiation, Retry,
+  short header y separación de datagramas coalesced.
+- Reensamblado por offset acotado y con detección de solapamientos conflictivos para CRYPTO/STREAM.
+- Tres espacios de packet number y recovery con RTT, pérdida temporal/por paquetes, PTO,
+  retransmisión y NewReno.
+- Selección determinista sucesiva de pares de candidatos, roles cliente/servidor no simétricos y
+  tests multiplataforma del núcleo.
 - Frontera interna `KQuicTransport` entre la API pública y el motor QUIC, con conexión autenticada,
   eventos de canal, datos, cierre, errores y estadísticas sin exponer detalles de plataforma.
 - Ciclo completo de `KQuicPeer` sobre un transporte determinista: conexión con timeout, verificación
@@ -22,6 +31,11 @@ Este documento recoge lo necesario para pasar de la base actual de `:kquic` a un
   dos sockets UDP reales sobre loopback.
 - Derivación HKDF de claves Initial cliente/servidor, AES-128-GCM y protección de cabecera mediante
   los proveedores JCA de JVM/Android. Los vectores de claves y máscara se validan contra RFC 9001.
+- `CommonQuicTlsSession` con ClientHello/ServerHello, ALPN `kquic/1`, parámetros QUIC,
+  CertificateRequest, certificados mutuos, CertificateVerify, Finished y secretos
+  Handshake/Application. Hay pruebas end-to-end con JCA y Security.framework reales.
+- UDP POSIX no bloqueante y tests loopback en iOS Simulator; reloj monotónico, aleatoriedad,
+  enumeración de interfaces, ECDH/firma/verificación mediante proveedores del sistema.
 
 La fachada pública no abre aún los sockets disponibles ni completa un handshake QUIC real. Ya puede
 ejecutar y probar el ciclo P2P completo cuando recibe un `KQuicTransport`, pero el constructor
@@ -34,20 +48,24 @@ transporte determinista es exclusivamente una prueba de contrato, no interoperab
 1. Completar los drivers UDP detrás de `KQuicTransport`: integrar los sockets JVM/Android ya
    disponibles, añadir Apple/Linux/Windows, temporizador monotónico, aleatoriedad segura, control
    de buffers y ciclo de vida.
-2. Completar el formato de paquetes QUIC v1: long/short headers, Connection IDs, token Retry, versiones, packet number spaces, coalescing y reconstrucción de números de paquete.
+2. Conectar el formato de paquetes QUIC v1 ya disponible con validación de Connection IDs e
+   integridad de Retry.
 3. Integrar la derivación y protección Initial ya implementada en el pipeline de paquetes; añadir
    actualización/descarte de claves y protección para Handshake y Application Data a partir de los
    secretos entregados por TLS.
-4. Implementar TLS 1.3 adaptado a QUIC: CRYPTO reassembly, ClientHello/ServerHello, extensiones de parámetros de transporte, certificados, Finished y `HANDSHAKE_DONE`.
-5. Conectar `KQuicCredentialsProvider` y `KQuicPeerVerifier` al handshake real usando proveedores criptográficos seguros de cada plataforma; no implementar primitivas criptográficas propias.
+4. Integrar la máquina `CommonQuicTlsSession` ya disponible con reensamblado CRYPTO y las
+   transiciones de claves del actor.
+5. Conectar `KQuicIdentityProvider` y `KQuicPeerVerifier` al handshake real usando proveedores
+   criptográficos seguros de cada plataforma; no implementar primitivas criptográficas propias.
 6. Hacer que el motor llame al contrato ya existente solo tras validar TLS y parámetros de transporte;
    `KQuicPeer` aplicará entonces `KQuicPeerVerifier`, pasará a `CONNECTED` y habilitará canales y `send()`.
 
 ## Streams, congestión y cierre
 
-1. Implementar todos los frames necesarios para streams y control de flujo: `MAX_DATA`, `MAX_STREAM_DATA`, `MAX_STREAMS`, `DATA_BLOCKED`, `STREAM_DATA_BLOCKED`, `RESET_STREAM` y `STOP_SENDING`.
-2. Añadir asignación de stream IDs, reensamblado por offset, FIN, presión de retorno y framing de canal (`label`, bytes/texto/control) sobre streams.
-3. Completar ACK ranges, retraso de ACK, detección temporal de pérdida, PTO, retransmisión de frames reemitibles y NewReno conforme a RFC 9002.
+1. Integrar en el actor los frames ya codificados de streams y control de flujo: `MAX_DATA`,
+   `MAX_STREAM_DATA`, `MAX_STREAMS`, blocked, `RESET_STREAM` y `STOP_SENDING`.
+2. Conectar la asignación/reensamblado de stream IDs y el framing de canal al packetizador.
+3. Integrar ACK ranges, retraso de ACK, pérdida, PTO, retransmisión y NewReno con timers reales.
 4. Aplicar *pacing*, límites de bytes en vuelo y límites de memoria por conexión/stream/datagram.
 5. Implementar `CONNECTION_CLOSE`, draining, idle timeout y códigos de error de transporte/aplicación; liberar sockets, timers, claves y buffers de forma determinista.
 6. Negociar RFC 9221 mediante `max_datagram_frame_size`; rechazar canales `UNRELIABLE` si el peer no negocia DATAGRAM.

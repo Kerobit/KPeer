@@ -14,13 +14,19 @@ internal interface KQuicTransport {
 
     suspend fun connect(
         candidatePair: KQuicCandidatePair,
-        credentials: KQuicCredentials
+        identity: KQuicIdentity,
+        role: KQuicTransportRole
     ): KQuicRemoteIdentity
 
     fun openChannel(config: KQuicChannelConfig)
     fun send(label: String, payload: ByteArray, text: Boolean): Boolean
     fun closeChannel(label: String)
     fun close()
+}
+
+internal enum class KQuicTransportRole {
+    CLIENT,
+    SERVER
 }
 
 internal sealed interface KQuicTransportEvent {
@@ -40,8 +46,12 @@ internal data class KQuicTransportStats(
     val packetsReceived: Long,
     val packetsLost: Long,
     val datagramsDropped: Long,
+    val minimumRttMs: Long? = null,
     val smoothedRttMs: Long?,
-    val bytesInFlight: Long
+    val congestionWindowBytes: Long = 0,
+    val bytesInFlight: Long,
+    val ptoCount: Long = 0,
+    val streamsBlocked: Long = 0
 )
 
 internal fun interface KQuicTransportFactory {
@@ -54,7 +64,8 @@ internal object UnavailableKQuicTransportFactory : KQuicTransportFactory {
 
         override suspend fun connect(
             candidatePair: KQuicCandidatePair,
-            credentials: KQuicCredentials
+            identity: KQuicIdentity,
+            role: KQuicTransportRole
         ): KQuicRemoteIdentity = throw KQuicError.TransportUnavailable()
 
         override fun openChannel(config: KQuicChannelConfig) {

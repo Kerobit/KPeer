@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CoroutineStart
 
 enum class KQuicDelivery { RELIABLE_ORDERED, UNRELIABLE }
 
@@ -35,21 +36,24 @@ class KQuicChannel internal constructor(
     val text: Flow<String> = _text.asSharedFlow()
     val currentState: KQuicChannelState get() = _state.value
 
-    fun send(bytes: ByteArray): Boolean = send(this, bytes, false)
-    fun send(text: String): Boolean = send(this, text.encodeToByteArray(), true)
+    fun send(bytes: ByteArray): Boolean =
+        _state.value == KQuicChannelState.OPEN && send(this, bytes, false)
+
+    fun send(text: String): Boolean =
+        _state.value == KQuicChannelState.OPEN && send(this, text.encodeToByteArray(), true)
 
     fun onBytes(handler: (ByteArray) -> Unit): KQuicSubscription {
-        val job = context.scope.launch { bytes.collect(handler) }
+        val job = context.scope.launch(start = CoroutineStart.UNDISPATCHED) { bytes.collect(handler) }
         return KQuicSubscription { job.cancel() }
     }
 
     fun onText(handler: (String) -> Unit): KQuicSubscription {
-        val job = context.scope.launch { text.collect(handler) }
+        val job = context.scope.launch(start = CoroutineStart.UNDISPATCHED) { text.collect(handler) }
         return KQuicSubscription { job.cancel() }
     }
 
     fun onState(handler: (KQuicChannelState) -> Unit): KQuicSubscription {
-        val job = context.scope.launch { state.collect(handler) }
+        val job = context.scope.launch(start = CoroutineStart.UNDISPATCHED) { state.collect(handler) }
         return KQuicSubscription { job.cancel() }
     }
 

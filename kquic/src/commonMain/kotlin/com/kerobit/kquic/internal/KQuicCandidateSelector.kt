@@ -13,7 +13,8 @@ internal object KQuicCandidateSelector {
         local: Collection<KQuicCandidate>,
         remote: Collection<KQuicCandidate>
     ): List<KQuicCandidatePair> = local.flatMap { left ->
-        remote.map { right -> KQuicCandidatePair(left, right) }
+        remote.filter { right -> left.host.isIpv6Literal == right.host.isIpv6Literal }
+            .map { right -> KQuicCandidatePair(left, right) }
     }.sortedWith(
         compareByDescending<KQuicCandidatePair> { pairScore(it) }
             .thenBy { it.local.foundation }
@@ -31,4 +32,7 @@ internal object KQuicCandidateSelector {
             KQuicCandidateType.SERVER_REFLEXIVE -> 2
             KQuicCandidateType.RELAY -> 1
         }
+
+    private val String.isIpv6Literal: Boolean
+        get() = ':' in this
 }

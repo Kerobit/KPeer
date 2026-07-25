@@ -8,8 +8,12 @@ data class KQuicStats(
     val packetsReceived: Long = 0,
     val packetsLost: Long = 0,
     val datagramsDropped: Long = 0,
+    val minimumRttMs: Long? = null,
     val smoothedRttMs: Long? = null,
+    val congestionWindowBytes: Long = 0,
     val bytesInFlight: Long = 0,
+    val ptoCount: Long = 0,
+    val streamsBlocked: Long = 0,
     val selectedCandidatePair: KQuicCandidatePair? = null,
     val closeReason: String? = null
 )
