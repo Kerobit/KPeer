@@ -1,6 +1,5 @@
 package com.kerobit.kquic.internal
 
-import com.kerobit.kquic.KQuicCandidateSource
 import com.kerobit.kquic.KQuicIdentityProvider
 import com.kerobit.kquic.KQuicSignatureAlgorithm
 import com.kerobit.kquic.KQuicSigner
@@ -88,14 +87,14 @@ private object AppleKQuicPlatformServices : KQuicPlatformServices {
             subjectPublicKeyInfoDer = p256SubjectPublicKeyInfo(publicPoint),
             randomSerial = appleSecureRandomBytes(16),
             sha256 = ::appleSha256,
-            signer = signer
+            signer = signer,
+            releasePlatformKey = { CFRelease(privateKey) }
         )
     }
 
-    override val hostCandidateSource: KQuicCandidateSource? = null
     override val datagramSocketFactory: KQuicDatagramSocketFactory =
         AppleKQuicDatagramSocketFactory
-    override val cryptoPrimitives: QuicCryptoPrimitives? = null
+    override val cryptoPrimitives: QuicCryptoPrimitives = AppleQuicCryptoPrimitives
     override val handshakeCrypto: Tls13HandshakeCrypto = AppleTls13HandshakeCrypto
     override val monotonicClock = KQuicMonotonicClock {
         memScoped {

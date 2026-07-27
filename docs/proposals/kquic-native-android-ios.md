@@ -1,6 +1,6 @@
 # KQuic: transporte QUIC nativo para Android e iOS
 
-**Estado:** base de implementación (`:kquic`)
+**Estado:** prototipo P2P funcional (`:kquic`), pendiente de aceptación en dispositivos físicos
 
 **Ámbito:** módulo `:kquic` dentro de KPeer; Android, iOS y escritorio nativo/JVM
 **Decisión de partida:** implementar el protocolo QUIC en el proyecto; no enlazar Quinn, MsQuic, libp2p ni una pila QUIC del sistema como motor de producción.
@@ -17,7 +17,7 @@ La implementación propia debe limitarse a la **pila de protocolo y sus máquina
 
 ### Objetivos de la primera versión
 
-- QUIC v1 P2P sobre UDP, para Android, iOS, JVM, macOS, Linux y Windows.
+- QUIC v1 P2P sobre UDP para Android 24+ e iOS 16+. JVM es el banco de pruebas del núcleo.
 - TLS 1.3 dentro de QUIC, autenticación de servidor y *pinning* de clave pública o cadena de confianza configurable.
 - Streams bidireccionales y unidireccionales, multiplexados y con *flow control*.
 - Datagrams QUIC opcionales para mensajes no fiables y de baja latencia.
@@ -30,9 +30,12 @@ La implementación propia debe limitarse a la **pila de protocolo y sus máquina
 - QUIC v2, 0-RTT, *connection migration*, ECN, PMTUD/DPLPMTUD, FEC y multipath.
 - Reemplazar WebRTC o compartir sus tipos de señalización/ICE por defecto.
 - Soporte JavaScript: los navegadores no exponen UDP ni QUIC IETF programable; KQuic no declara target JS.
-- Construir criptografía, PKI o un TURN propio.
+- Construir PKI, relay o TURN propio.
 
-QUIC sobre UDP **no resuelve por sí solo** el descubrimiento ni el cruce de NAT. KQuic incluye la parte cliente de gathering y connectivity checks compatibles con STUN/ICE; la aplicación intercambia sus candidatos usando `KQuicSignal`. Cuando no haya ruta directa, debe aportar un candidato relay y su credencial opaca. La especificación del relay es parte de KQuic; su implementación y operación quedan fuera del módulo.
+QUIC sobre UDP **no resuelve por sí solo** el descubrimiento ni el cruce de NAT. KQuic reúne
+candidatos host y server-reflexive con STUN y ejecuta connectivity checks autenticados sobre el
+mismo socket. La aplicación intercambia `KQuicSignal`. No se admiten candidatos relay en esta fase;
+si no hay ruta directa, la conexión falla de forma explícita.
 
 ## Comparación de alternativas
 
@@ -45,39 +48,44 @@ QUIC sobre UDP **no resuelve por sí solo** el descubrimiento ni el cruce de NAT
 
 Quinn, MsQuic y libp2p son referencias útiles para estudiar estructura de estado, recuperación de pérdidas, pruebas de interoperabilidad y observabilidad. No se copiará código ni se expondrán sus tipos; antes de consultar código concreto hay que revisar su licencia y conservar una matriz de procedencia.
 
-## API pública propuesta
+## API pública implementada
 
-La similitud debe ser de ergonomía, no una falsa equivalencia de transporte. `KQuic` no tendrá `KPeerSignal`, `IceServer`, SDP ni `createChannel` condicionado por `initiator`.
+La similitud es de ergonomía, no una falsa equivalencia de transporte. `KQuic` no usa
+`KPeerSignal`, SDP ni `RTCDataChannel`.
 
 ```kotlin
-val endpoint = KQuicEndpoint(
+val peer = KQuicPeer(
     context = KQuicContext(scope = scope, platformContext = androidContext),
-    config = KQuicEndpointConfig(
-        trust = KQuicTrust.PinnedPublicKey(serverPublicKey),
+    config = KQuicConfig(
+        initiator = true,
+        rendezvousId = roomId,
+        security = KQuicSecurity.ephemeralWithAuthenticatedSignaling(),
+        stunServers = listOf(KQuicStunServer("stun.example.net")),
         idleTimeoutMs = 30_000
     )
 )
 
-val session = endpoint.connect(
-    KQuicConnectRequest(host = "game.example.com", port = 4433)
-)
+peer.onSignal(signaling::send)
+peer.start()
+peer.signal(signalReceivedFromRemote)
 
-val channel = session.openChannel(
+val channel = peer.createChannel(
     KQuicChannelConfig(label = "game", delivery = KQuicDelivery.RELIABLE_ORDERED)
 )
 channel.send(bytes)
 
-session.channels.collect { incoming -> /* bytes/text/state */ }
-session.state.collect { state -> /* CONNECTING, CONNECTED, ... */ }
+peer.channels.collect { incoming -> /* bytes/text/state */ }
+peer.connectionState.collect { state -> /* CONNECTING, CONNECTED, ... */ }
 ```
 
-Propuesta de tipos principales:
+Tipos principales:
 
-- `KQuicEndpoint`: posee sockets UDP, acepta conexiones entrantes y abre salientes.
-- `KQuicSession`: una conexión QUIC autenticada; expone `state`, `stats`, `close()` y apertura/aceptación de canales.
+- `KQuicPeer`: posee una conexión P2P, reúne candidatos, intercambia señales y expone estado,
+  estadísticas, canales y cierre.
+- `KQuicContext`: agrupa scope, contexto de plataforma y servicios internos.
+- `KQuicOffer`/`KQuicAnswer`: candidatos, credenciales efímeras y fingerprint de identidad.
 - `KQuicChannel`: adaptador de alto nivel para un stream o un flujo de datagrams; conserva `send(ByteArray)`, `send(String)`, callbacks/`Flow` y `close()` cercanos a `KChannel`.
 - `KQuicChannelConfig`: etiqueta y modo de entrega. `RELIABLE_ORDERED` usa un stream; `UNRELIABLE` usa QUIC DATAGRAM. No se ofrecerá `reliable = true, ordered = false` hasta definir explícitamente su framing y semántica.
-- `KQuicServer`: fachada opcional sobre un endpoint en escucha para evitar que el usuario gestione demultiplexado de sesiones.
 
 Cada canal necesita framing propio: `varint channel-id`, tipo de payload (bytes/texto/control) y longitud. En streams el parser debe tolerar que una cabecera o un mensaje llegue fragmentado; en datagrams cada unidad conserva límites de mensaje. La etiqueta no es un identificador de stream QUIC: se negocia en un mensaje de control autenticado al abrir el canal.
 
@@ -91,8 +99,8 @@ Crear el módulo `:kquic` dentro de KPeer, en vez de ampliar `:kpeer`:
 KPeer/
   kquic/
     src/commonMain/.../kquic/
-      KQuicEndpoint.kt       # API pública
-      KQuicSession.kt
+      KQuicPeer.kt           # API pública P2P
+      KQuicSignal.kt
       KQuicChannel.kt
       internal/quic/          # wire format y máquinas de estado
         packet/ frame/ tls/ recovery/ transport/
@@ -108,7 +116,7 @@ El núcleo `commonMain` contendrá todo lo determinista: codificación/decodific
 - `MonotonicClock` y planificador de temporizadores.
 - `SecureRandom`.
 - `CryptoProvider` y `CertificateVerifier`.
-- notificación de cambios de red y política de ciclo de vida.
+- política de ciclo de vida y, en una fase posterior, notificación de cambios de red.
 
 La recepción UDP nunca ejecutará lógica de usuario. Copiará/arrendará el datagrama, lo entregará serialmente al actor de la sesión y liberará el búfer al terminar. Una única sesión no puede ser procesada en paralelo: los números de paquete, ACK y claves se actualizan en orden. El envío y las devoluciones a `Flow` se harán fuera del hilo de I/O, con presupuestos de memoria y límites de cola.
 
@@ -161,7 +169,7 @@ Para `KQuicDelivery.UNRELIABLE` se implementará [RFC 9221](https://www.rfc-edit
 
 ### Android
 
-- Mantener `minSdk = 25`; documentar `android.permission.INTERNET` y no asumir un puerto local fijo.
+- Mantener `minSdk = 24`; documentar `android.permission.INTERNET` y no asumir un puerto local fijo.
 - Implementar `UdpSocket` sobre APIs de datagrama no bloqueantes del runtime Android. El hilo de I/O no debe depender de `Dispatchers.Main`.
 - Seguir la red activa con `ConnectivityManager`; cuando haya varias redes, permitir asociar el socket a la red elegida y exponer el cambio al núcleo.
 - Considerar Doze, restricciones de ejecución en segundo plano y el uso de un foreground service para sesiones que realmente deban sobrevivir en background. Eso es responsabilidad de la aplicación, no de la librería.
@@ -176,19 +184,11 @@ Para `KQuicDelivery.UNRELIABLE` se implementará [RFC 9221](https://www.rfc-edit
 
 ## Descubrimiento, autenticación y P2P
 
-La API básica es `connect(host, port)` hacia un servidor. Para un juego P2P, el backend de matchmaking debe publicar una propuesta separada, por ejemplo:
-
-```kotlin
-data class KQuicPeerRendezvous(
-    val sessionId: String,
-    val candidates: List<KQuicUdpCandidate>,
-    val peerPublicKey: ByteArray,
-    val expiresAtEpochMs: Long,
-    val signedToken: ByteArray
-)
-```
-
-Ese protocolo tendrá que autenticar la invitación, caducar candidatos, coordinar el *simultaneous open* y proteger contra redirección/amplificación. STUN y el *hole punching* serían dependencias de producto de esa fase, no parte de QUIC. Cuando una red simétrica o CGNAT impida la ruta directa, será necesario un relay con protocolo y costes propios; no se debe prometer conectividad P2P universal.
+La aplicación entrega ofertas y respuestas entre dos `KQuicPeer`. KQuic administra sockets,
+candidatos host/server-reflexive, retransmisión STUN, roles, nominación y selección del primer par
+válido. El signaling debe autenticar el fingerprint y las credenciales efímeras; no se registran
+contraseñas ni fingerprints completos. Cuando NAT simétrico, CGNAT o firewall impidan una ruta
+directa será necesario un relay futuro; no se promete conectividad P2P universal.
 
 ## Seguridad, límites y observabilidad
 
@@ -208,11 +208,12 @@ Ese protocolo tendrá que autenticar la invitación, caducar candidatos, coordin
 | 2. Handshake | Initial/Handshake, TLS 1.3 QUIC y certificado/pinning | Conexión mutua local y rechazo de cadena/pin inválidos |
 | 3. Streams | Flow control, ACK, recovery, PTO, NewReno y cierre | Transferencia fiable bajo pérdida, reordenación y duplicados simulados |
 | 4. Móvil | UDP/crypto Android+iOS, muestras y métricas | Pruebas en dispositivos físicos y ciclo de vida controlado |
-| 5. Interop | Cliente/servidor de referencia y red adversa | Interoperabilidad bidireccional con Quinn y MsQuic en CI/lab |
+| 5. Interop | Cliente/servidor de referencia y red adversa | Trabajo posterior; no bloquea el prototipo móvil |
 | 6. Datagrams | RFC 9221, límites de MTU y canal no fiable | Pérdida explícita y sin retransmisión bajo congestión |
 | 7. Beta | Auditoría externa, *load test*, documentación y versionado | Presupuesto de memoria/CPU definido y cero fallos críticos abiertos |
 
-La interoperabilidad con Quinn y MsQuic es una puerta obligatoria, no una sustitución de pruebas unitarias. Debe verificarse contra al menos dos implementaciones independientes y con una red que inyecte pérdida, duplicados, reordenación, MTU reducida y cambios de latencia. Antes de disponibilidad general se requiere revisión criptográfica y de parser por terceros.
+La interoperabilidad con Quinn y MsQuic y la revisión criptográfica externa siguen siendo puertas
+para una versión estable, pero no bloquean este prototipo ni la siguiente integración experimental.
 
 ## Inventario inicial de trabajo
 
@@ -227,17 +228,18 @@ La interoperabilidad con Quinn y MsQuic es una puerta obligatoria, no una sustit
 
 ## Criterios de aceptación del MVP
 
-- Un cliente Android y uno iOS se conectan a un servidor KQuic autenticado, intercambian varios streams concurrentes y cierran sin fugas.
+- Un Android físico y un iPhone físico se conectan directamente con identidad mutua, intercambian
+  streams y datagrams en ambos sentidos y cierran sin fugas.
 - Los streams conservan orden y fiabilidad bajo los escenarios de pérdida/reordenación de la matriz de pruebas.
 - Los datagrams negociados pueden perderse, no se retransmiten y respetan el tamaño anunciado.
 - Un certificado, pin, token Retry, frame o parámetro de transporte inválido se rechaza sin bloqueo ni crecimiento no acotado de memoria.
 - Las métricas y el motivo de cierre permiten diagnosticar un fallo sin registrar secretos.
-- El mismo núcleo supera los vectores y la interoperabilidad con Quinn y MsQuic; Android e iOS pasan la matriz de redes física acordada.
+- El mismo núcleo supera los vectores en JVM, Android e iOS; Android e iOS pasan la matriz de redes física acordada.
 
 ## Decisiones adoptadas
 
 - KQuic vive como módulo `:kquic` y se publica aparte de `:kpeer`.
-- El primer caso de uso es P2P directo; el relay es obligatorio como fallback, pero se entrega como especificación y candidato opaco, no como un servicio de este repositorio.
+- El primer caso de uso es P2P directo; relay/TURN queda fuera de esta fase.
 - Las credenciales TLS y la verificación del remoto entran mediante proveedores inyectables. KQuic no adopta identidad, certificados ni contratos de Kerobit.
 - La versión inicial cubre QUIC v1 y DATAGRAM, sin 0-RTT, migración, multipath, ECN, QUIC v2 ni JavaScript.
 - La API Swift inicial será la superficie Objective-C/Kotlin generada por el framework; una envoltura Swift idiomática se evaluará después de estabilizar la API experimental.

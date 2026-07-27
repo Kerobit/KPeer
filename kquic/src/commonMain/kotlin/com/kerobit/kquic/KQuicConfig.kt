@@ -1,7 +1,5 @@
 package com.kerobit.kquic
 
-import kotlinx.coroutines.flow.Flow
-
 /** Marks APIs whose wire compatibility is not stable until the first KQuic release. */
 @RequiresOptIn(level = RequiresOptIn.Level.WARNING)
 annotation class ExperimentalKQuicApi
@@ -27,12 +25,14 @@ fun interface KQuicSigner {
 class KQuicIdentity private constructor(
     val certificateChainDer: List<ByteArray>,
     val signer: KQuicSigner,
-    internal val cachedPublicKeySha256: String?
+    internal val cachedPublicKeySha256: String?,
+    private val releasePlatformKey: (() -> Unit)?
 ) {
+    private var released = false
     constructor(
         certificateChainDer: List<ByteArray>,
         signer: KQuicSigner
-    ) : this(certificateChainDer, signer, null)
+    ) : this(certificateChainDer, signer, null, null)
 
     init {
         require(certificateChainDer.isNotEmpty())
@@ -45,8 +45,21 @@ class KQuicIdentity private constructor(
         fun platformGenerated(
             certificateChainDer: List<ByteArray>,
             signer: KQuicSigner,
-            publicKeySha256: String
-        ): KQuicIdentity = KQuicIdentity(certificateChainDer, signer, publicKeySha256)
+            publicKeySha256: String,
+            releasePlatformKey: (() -> Unit)? = null
+        ): KQuicIdentity = KQuicIdentity(
+            certificateChainDer,
+            signer,
+            publicKeySha256,
+            releasePlatformKey
+        )
+    }
+
+    internal fun release() {
+        if (!released) {
+            released = true
+            releasePlatformKey?.invoke()
+        }
     }
 }
 
@@ -102,9 +115,15 @@ sealed interface KQuicSecurity {
     }
 }
 
-/** Produces host, server-reflexive, or relay candidates as they become available. */
-fun interface KQuicCandidateSource {
-    fun candidates(): Flow<KQuicCandidate>
+/** A UDP STUN endpoint used to discover server-reflexive candidates. */
+data class KQuicStunServer(
+    val host: String,
+    val port: Int = 3478
+) {
+    init {
+        require(host.isNotBlank())
+        require(port in 1..65_535)
+    }
 }
 
 data class KQuicLimits(
@@ -114,7 +133,7 @@ data class KQuicLimits(
     val maxStreamData: Long = 262_144,
     val maxMessageSize: Int = 262_144,
     val maxChannelLabelBytes: Int = 256,
-    val maxDatagramSize: Int = 1_200,
+    val maxDatagramSize: Int = 1_100,
     val maxBufferedPackets: Int = 1_024,
     val maxBufferedCryptoBytes: Int = 1_048_576,
     val maxBufferedStreamBytes: Int = 262_144,
@@ -127,7 +146,7 @@ data class KQuicLimits(
         require(maxStreamData > 0)
         require(maxMessageSize > 0)
         require(maxChannelLabelBytes > 0)
-        require(maxDatagramSize in 1..65_507)
+        require(maxDatagramSize in 1..1_100)
         require(maxBufferedPackets > 0)
         require(maxBufferedCryptoBytes > 0)
         require(maxBufferedStreamBytes > 0)
@@ -146,14 +165,17 @@ data class KQuicConfig(
     val rendezvousId: String,
     val security: KQuicSecurity,
     val gatherHostCandidates: Boolean = true,
-    val candidateSources: List<KQuicCandidateSource> = emptyList(),
-    val initialCandidates: List<KQuicCandidate> = emptyList(),
+    val stunServers: List<KQuicStunServer> = emptyList(),
     val limits: KQuicLimits = KQuicLimits(),
+    val candidateGatheringTimeoutMs: Long = 5_000,
+    val connectivityCheckTimeoutMs: Long = 10_000,
     val connectionTimeoutMs: Long? = 30_000,
     val idleTimeoutMs: Long = 30_000
 ) {
     init {
         require(rendezvousId.isNotBlank())
+        require(candidateGatheringTimeoutMs > 0)
+        require(connectivityCheckTimeoutMs > 0)
         require(connectionTimeoutMs == null || connectionTimeoutMs > 0)
         require(idleTimeoutMs > 0)
     }

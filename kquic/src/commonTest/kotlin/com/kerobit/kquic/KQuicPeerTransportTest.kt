@@ -29,8 +29,8 @@ class KQuicPeerTransportTest {
         val local = candidate("local", 10)
         val remote = candidate("remote", 9)
 
-        responder.signal(KQuicOffer("room", listOf(remote), TEST_FINGERPRINT))
-        initiator.signal(KQuicAnswer("room", listOf(remote), TEST_FINGERPRINT))
+        responder.signal(KQuicOffer("room", listOf(remote), TEST_FINGERPRINT, TEST_CREDENTIALS))
+        initiator.signal(KQuicAnswer("room", listOf(remote), TEST_FINGERPRINT, TEST_CREDENTIALS))
         awaitConnected(initiator)
         awaitConnected(responder)
         assertEquals(KQuicTransportRole.CLIENT, initiatorTransport.lastRole)
@@ -66,7 +66,14 @@ class KQuicPeerTransportTest {
         val transport = TestTransport(connectForever = true)
         val peer = peer(initiator = true, transport, connectionTimeoutMs = 50)
 
-        peer.signal(KQuicAnswer("room", listOf(candidate("remote", 9)), TEST_FINGERPRINT))
+        peer.signal(
+            KQuicAnswer(
+                "room",
+                listOf(candidate("remote", 9)),
+                TEST_FINGERPRINT,
+                TEST_CREDENTIALS
+            )
+        )
 
         withTimeout(1_000) {
             peer.connectionState.first { it == KQuicPeerConnectionState.FAILED }
@@ -77,14 +84,14 @@ class KQuicPeerTransportTest {
     }
 
     @Test
-    fun signaling_replay_keeps_offer_snapshot_and_end_marker_for_late_subscribers() = runBlocking {
+    fun signaling_replay_keeps_complete_offer_snapshot_for_late_subscribers() = runBlocking {
         val peer = peer(initiator = true, TestTransport())
         peer.start()
 
-        val emitted = withTimeout(1_000) { peer.signals.take(3).toList() }
-        assertTrue(emitted[0] is KQuicOffer)
-        assertTrue(emitted[1] is KQuicCandidateUpdate)
-        assertTrue(emitted[2] is KQuicEndOfCandidates)
+        val emitted = withTimeout(1_000) { peer.signals.take(1).toList() }
+        val offer = emitted.single() as KQuicOffer
+        assertTrue(offer.endOfCandidates)
+        assertTrue(offer.candidates.isNotEmpty())
         peer.close()
     }
 
@@ -104,8 +111,7 @@ class KQuicPeerTransportTest {
                     identityProvider = KQuicIdentityProvider { testIdentity() },
                     peerVerifier = KQuicPeerVerifier { KQuicVerificationResult.Accepted }
                 ),
-                gatherHostCandidates = false,
-                initialCandidates = listOf(candidate("a", 10))
+                gatherHostCandidates = false
             )
         )
         peer.signal(
@@ -113,6 +119,7 @@ class KQuicPeerTransportTest {
                 rendezvousId = "room",
                 candidates = listOf(candidate("high", 100), candidate("low", 1)),
                 identityPublicKeySha256 = TEST_FINGERPRINT,
+                connectivityCredentials = TEST_CREDENTIALS,
                 endOfCandidates = true
             )
         )
@@ -139,7 +146,6 @@ class KQuicPeerTransportTest {
                 peerVerifier = KQuicPeerVerifier { KQuicVerificationResult.Accepted }
             ),
             gatherHostCandidates = false,
-            initialCandidates = listOf(candidate(if (initiator) "a" else "b", 10)),
             connectionTimeoutMs = connectionTimeoutMs
         )
     )
@@ -172,10 +178,15 @@ class KQuicPeerTransportTest {
         var lastRole: KQuicTransportRole? = null
             private set
 
+        override suspend fun gatherCandidates(): List<KQuicCandidate> =
+            listOf(candidateForTransport("local", 10))
+
         override suspend fun connect(
             candidatePair: KQuicCandidatePair,
             identity: KQuicIdentity,
-            role: KQuicTransportRole
+            role: KQuicTransportRole,
+            localCredentials: KQuicConnectivityCredentials,
+            remoteCredentials: KQuicConnectivityCredentials
         ): KQuicRemoteIdentity {
             lastRole = role
             if (connectForever) awaitCancellation()
@@ -211,11 +222,15 @@ class KQuicPeerTransportTest {
     private class PairRetryTransport : KQuicTransport {
         override val events: Flow<KQuicTransportEvent> = MutableSharedFlow()
         val attemptedFoundations = mutableListOf<String>()
+        override suspend fun gatherCandidates(): List<KQuicCandidate> =
+            listOf(candidateForTransport("a", 10))
 
         override suspend fun connect(
             candidatePair: KQuicCandidatePair,
             identity: KQuicIdentity,
-            role: KQuicTransportRole
+            role: KQuicTransportRole,
+            localCredentials: KQuicConnectivityCredentials,
+            remoteCredentials: KQuicConnectivityCredentials
         ): KQuicRemoteIdentity {
             attemptedFoundations += candidatePair.remote.foundation
             if (attemptedFoundations.size == 1) {
@@ -242,5 +257,14 @@ class KQuicPeerTransportTest {
     private companion object {
         const val TEST_FINGERPRINT =
             "0000000000000000000000000000000000000000000000000000000000000000"
+        val TEST_CREDENTIALS = KQuicConnectivityCredentials("remote-user", "remote-password-123")
+
+        fun candidateForTransport(foundation: String, priority: Long) = KQuicCandidate(
+            foundation = foundation,
+            type = KQuicCandidateType.HOST,
+            host = "127.0.0.1",
+            port = 5001,
+            priority = priority
+        )
     }
 }

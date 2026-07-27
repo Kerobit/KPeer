@@ -105,6 +105,24 @@ class QuicCodecTest {
     }
 
     @Test
+    fun parsers_reject_unknown_frames_and_allow_an_explicit_flow_control_window_update() {
+        assertFailsWith<IllegalStateException> {
+            QuicFrames.decodeAll(byteArrayOf(0x3f))
+        }
+
+        val reassembler = QuicOffsetReassembler(maxBufferedBytes = 64, maxOffset = 4uL)
+        assertContentEquals(byteArrayOf(1, 2, 3, 4), reassembler.add(
+            0uL,
+            byteArrayOf(1, 2, 3, 4)
+        ))
+        reassembler.updateMaximumOffset(8uL)
+        assertContentEquals(byteArrayOf(5, 6, 7, 8), reassembler.add(
+            4uL,
+            byteArrayOf(5, 6, 7, 8)
+        ))
+    }
+
+    @Test
     fun typed_transport_parameters_roundTrip_datagram_and_flow_control_limits() {
         val values = QuicTransportParameterValues(
             initialMaxData = 1_000_000uL,

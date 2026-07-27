@@ -10,13 +10,14 @@ import com.kerobit.kquic.KQuicError
  */
 internal class QuicOffsetReassembler(
     private val maxBufferedBytes: Int,
-    private val maxOffset: ULong
+    maxOffset: ULong
 ) {
     private data class Fragment(val offset: ULong, val bytes: ByteArray) {
         val end: ULong get() = offset + bytes.size.toULong()
     }
 
     private val fragments = mutableListOf<Fragment>()
+    private var maxOffset = maxOffset
     private var bufferedBytes = 0
     var consumedOffset: ULong = 0uL
         private set
@@ -59,6 +60,10 @@ internal class QuicOffsetReassembler(
 
     val complete: Boolean
         get() = finalOffset == consumedOffset
+
+    fun updateMaximumOffset(value: ULong) {
+        if (value > maxOffset) maxOffset = value
+    }
 
     private fun normalize() {
         fragments.sortBy(Fragment::offset)

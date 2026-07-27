@@ -8,7 +8,7 @@ Pod::Spec.new do |spec|
     spec.summary                  = 'KQuic - Kotlin Multiplatform QUIC transport'
     spec.vendored_frameworks      = 'build/cocoapods/framework/KerobitKQuic.framework'
     spec.libraries                = 'c++'
-    spec.ios.deployment_target    = '17.0'
+    spec.ios.deployment_target    = '16.0'
     spec.osx.deployment_target    = '11.0'
     if !Dir.exist?('build/cocoapods/framework/KerobitKQuic.framework') || Dir.empty?('build/cocoapods/framework/KerobitKQuic.framework')
         raise "

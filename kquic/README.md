@@ -14,7 +14,12 @@ val peer = KQuicPeer(
         rendezvousId = roomId,
         security = KQuicSecurity.ephemeralWithAuthenticatedSignaling(),
         gatherHostCandidates = true,
-        connectionTimeoutMs = 15_000
+        stunServers = listOf(
+            KQuicStunServer("stun.example.net")
+        ),
+        candidateGatheringTimeoutMs = 5_000,
+        connectivityCheckTimeoutMs = 10_000,
+        connectionTimeoutMs = 30_000
     )
 )
 
@@ -44,10 +49,11 @@ realtime.send(serializedPosition)
 peer.close()
 ```
 
-La señalización sigue siendo responsabilidad de la aplicación. KQuic intercambia ofertas,
-respuestas, snapshots de candidatos y el pin SHA-256 de identidad, pero no abre WebSocket ni
-adopta el protocolo de matchmaking de Kerobit. El helper de identidad efímera solo es seguro si
-ese canal de señalización está autenticado.
+La señalización sigue siendo responsabilidad de la aplicación. KQuic intercambia una oferta y una
+respuesta con candidatos, credenciales efímeras de connectivity checks y el pin SHA-256 de
+identidad, pero no abre WebSocket ni adopta el protocolo de matchmaking de Kerobit. No hay
+servidores STUN públicos por defecto. Las señales contienen una contraseña efímera y un fingerprint:
+deben transportarse por un canal autenticado y nunca registrarse completas.
 
 Para certificados persistentes, PKI o pinning propio se utiliza:
 
@@ -65,19 +71,37 @@ KQuicSecurity.Explicit(
 El signer solo expone `sign(algorithm, message)`: una clave de Android Keystore o Apple Keychain no
 necesita ser exportable ni representarse mediante un handle de texto.
 
-## Estado
+## Plataformas
 
-La API pública, la identidad efímera P-256 Android/Apple, el rendezvous, el framing incremental y
-los límites tienen pruebas. El núcleo común incluye parsing invariante previo a header protection,
-protección completa de paquetes long/short, paquetes coalesced, tres espacios de packet number,
-reensamblado CRYPTO/STREAM acotado, flow-control frames, QUIC DATAGRAM y recovery/NewReno
-determinista. La máquina TLS común completa el perfil mutuo P-256/AES-128-GCM-SHA256, incluyendo
-ALPN, parámetros QUIC, CertificateVerify y Finished; se prueba con JCA y Security.framework reales.
+Android requiere API 24 o superior y el permiso:
 
-Todavía no están conectadas todas esas piezas mediante el actor UDP y falta AES-GCM/header
-protection en el proveedor Apple. En consecuencia, el constructor público aún no establece una
-conexión QUIC interoperable real. El módulo sigue siendo una base experimental y no debe anunciarse
-como funcional ni estable hasta superar las pruebas Android↔iOS y Quinn.
+```xml
+<uses-permission android:name="android.permission.INTERNET" />
+```
+
+En iOS 16 o superior, una app que busque peers en la LAN debe declarar
+`NSLocalNetworkUsageDescription` con una explicación adecuada. KQuic no solicita permisos,
+entitlements ni ejecución en background por la aplicación.
+
+Los candidatos host se reúnen sobre sockets UDP reales. Cada `KQuicStunServer` ejecuta Binding
+desde esos mismos sockets y puede añadir candidatos server-reflexive IPv4/IPv6. STUN no sustituye
+TURN: NAT simétrico, CGNAT o políticas de firewall pueden impedir la conexión directa.
+
+## Estado y límites
+
+El constructor público usa un transporte UDP real en Android, iOS y JVM. El actor serial conecta
+packet protection, TLS 1.3 mutuo, tres espacios de packet number, ACK/PTO/NewReno, flow control,
+streams y QUIC DATAGRAM. `CONNECTED` solo se publica tras Finished, `HANDSHAKE_DONE`, parámetros
+QUIC válidos y la verificación de identidad configurada. `send()` indica aceptación en la cola
+local y puede devolver `false` ante backpressure.
+
+Esta entrega sigue siendo un prototipo experimental. No incluye relay/TURN, migración de conexión,
+0-RTT, QUIC v2, PMTUD, auditoría externa ni una promesa de interoperabilidad con Quinn/MsQuic.
+Un cambio de ruta requiere cerrar y crear otro peer. La validación Android físico ↔ iPhone físico
+continúa siendo una puerta manual antes de integrar el módulo en `kerobit-sdk`.
+
+El payload de aplicación de un canal `UNRELIABLE` está limitado por defecto a 1.100 bytes para
+mantener el datagrama QUIC completo dentro del MTU conservador de 1.200 bytes.
 
 El orden de implementación y los bloqueantes están en
 [`docs/proposals/kquic-pending-work.md`](../docs/proposals/kquic-pending-work.md).

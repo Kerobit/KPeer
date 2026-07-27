@@ -81,6 +81,10 @@ internal class QuicStreamManager(
         stream.add(frame.finalSize, ByteArray(0), fin = true)
     }
 
+    fun updateLocalStreamLimit(streamId: ULong, maximumData: ULong) {
+        receiveStreams[streamId]?.updateMaximumOffset(maximumData)
+    }
+
     private fun validatePeerCanSend(streamId: ULong) {
         val locallyInitiated = (streamId and 0x01uL) == role.initiatorBit
         val unidirectional = (streamId and 0x02uL) != 0uL
@@ -124,6 +128,12 @@ internal class QuicStreamSender(
     fun updateMaximumData(value: ULong) {
         maximumData = maxOf(maximumData, value)
     }
+
+    val availableData: ULong
+        get() = maximumData - nextOffset
+
+    val maximumDataLimit: ULong
+        get() = maximumData
 
     fun frame(bytes: ByteArray, fin: Boolean = false): QuicFrame.Stream {
         if (finished) throw KQuicError.ProtocolViolation("STREAM data queued after FIN")

@@ -1,6 +1,5 @@
 package com.kerobit.kquic.internal
 
-import com.kerobit.kquic.KQuicCandidateSource
 import com.kerobit.kquic.KQuicIdentityProvider
 import com.kerobit.kquic.KQuicSignatureAlgorithm
 import com.kerobit.kquic.KQuicSigner
@@ -42,11 +41,6 @@ private object AndroidKQuicPlatformServices : KQuicPlatformServices {
         }
     }
 
-    /*
-     * Candidates must advertise the port of the socket that owns the connection. Enumeration is
-     * therefore supplied by CommonKQuicTransport after binding, not as an independent source.
-     */
-    override val hostCandidateSource: KQuicCandidateSource? = null
     override val datagramSocketFactory: KQuicDatagramSocketFactory =
         AndroidKQuicDatagramSocketFactory
     override val cryptoPrimitives: QuicCryptoPrimitives = AndroidQuicCryptoPrimitives

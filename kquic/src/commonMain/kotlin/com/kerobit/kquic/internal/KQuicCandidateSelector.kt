@@ -17,14 +17,25 @@ internal object KQuicCandidateSelector {
             .map { right -> KQuicCandidatePair(left, right) }
     }.sortedWith(
         compareByDescending<KQuicCandidatePair> { pairScore(it) }
-            .thenBy { it.local.foundation }
-            .thenBy { it.remote.foundation }
+            .thenBy { canonicalPairKey(it) }
     )
 
     private fun pairScore(pair: KQuicCandidatePair): Long {
         val typeBonus = pair.local.type.preference + pair.remote.type.preference
         return typeBonus * 1_000_000_000L + pair.local.priority + pair.remote.priority
     }
+
+    /**
+     * Role-independent tie-breaker. The reciprocal peer sees local/remote reversed and therefore
+     * must derive the same ordering when several interfaces have equal ICE priority.
+     */
+    private fun canonicalPairKey(pair: KQuicCandidatePair): String =
+        listOf(candidateKey(pair.local), candidateKey(pair.remote))
+            .sorted()
+            .joinToString("|")
+
+    private fun candidateKey(candidate: KQuicCandidate): String =
+        "${candidate.type}:${candidate.host}:${candidate.port}:${candidate.foundation}"
 
     private val KQuicCandidateType.preference: Long
         get() = when (this) {

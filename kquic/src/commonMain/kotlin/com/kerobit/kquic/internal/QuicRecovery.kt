@@ -119,6 +119,13 @@ internal class QuicRecovery(
         ptoCount = (ptoCount + 1).coerceAtMost(20)
     }
 
+    /** Frames for a single PTO probe, oldest outstanding packet first. */
+    fun ptoProbeFrames(): List<QuicFrame> =
+        sent.values
+            .firstOrNull { it.ackEliciting && it.retransmittableFrames.isNotEmpty() }
+            ?.retransmittableFrames
+            .orEmpty()
+
     private fun updateRtt(rawSampleMs: Long, ackDelayMs: Long) {
         val latest = rawSampleMs.coerceAtLeast(0)
         latestRttMs = latest

@@ -45,6 +45,7 @@ internal interface QuicTlsSession {
 internal interface Tls13KeyAgreement {
     val publicKey: ByteArray
     fun deriveSharedSecret(peerPublicKey: ByteArray): ByteArray
+    fun close() = Unit
 }
 
 internal interface Tls13HandshakeCrypto {

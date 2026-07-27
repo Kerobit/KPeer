@@ -4,6 +4,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -26,19 +28,50 @@ class KQuicPeerTest {
                 initiator = true,
                 rendezvousId = "room-1",
                 security = security,
-                gatherHostCandidates = false,
-                initialCandidates = listOf(candidate("local", KQuicCandidateType.HOST, 10))
+                gatherHostCandidates = false
             )
         )
         peer.start()
         peer.signal(
             KQuicAnswer(
                 "room-1",
-                listOf(candidate("remote", KQuicCandidateType.RELAY, 1)),
-                TEST_FINGERPRINT
+                listOf(candidate("remote", KQuicCandidateType.HOST, 1)),
+                TEST_FINGERPRINT,
+                TEST_CREDENTIALS
             )
         )
-        assertEquals(KQuicPeerConnectionState.CONNECTING, peer.currentConnectionState)
+        withTimeout(1_000) {
+            peer.connectionState.first { it == KQuicPeerConnectionState.CONNECTING }
+        }
+        peer.close()
+    }
+
+    @Test
+    fun relay_candidates_are_rejected_by_the_direct_only_prototype() = runBlocking {
+        val peer = KQuicPeer(
+            KQuicContext(
+                scope = this,
+                platformContext = null,
+                transportFactory = KQuicTransportFactory { PendingTransport }
+            ),
+            KQuicConfig(
+                initiator = true,
+                rendezvousId = "room-1",
+                security = security,
+                gatherHostCandidates = false
+            )
+        )
+        peer.start()
+        assertFailsWith<KQuicError.InvalidSignal> {
+            peer.signal(
+                KQuicAnswer(
+                    "room-1",
+                    listOf(candidate("relay", KQuicCandidateType.RELAY, 1)),
+                    TEST_FINGERPRINT,
+                    TEST_CREDENTIALS
+                )
+            )
+        }
         peer.close()
     }
 
@@ -54,7 +87,7 @@ class KQuicPeerTest {
             )
         )
         assertFailsWith<KQuicError.InvalidSignal> {
-            peer.signal(KQuicOffer("room-2", emptyList(), TEST_FINGERPRINT))
+            peer.signal(KQuicOffer("room-2", emptyList(), TEST_FINGERPRINT, TEST_CREDENTIALS))
         }
         peer.close()
     }
@@ -76,11 +109,23 @@ class KQuicPeerTest {
 
     private object PendingTransport : KQuicTransport {
         override val events: Flow<KQuicTransportEvent> = emptyFlow()
+        override suspend fun gatherCandidates(): List<KQuicCandidate> =
+            listOf(
+                KQuicCandidate(
+                    foundation = "local",
+                    type = KQuicCandidateType.HOST,
+                    host = "127.0.0.1",
+                    port = 5000,
+                    priority = 10
+                )
+            )
 
         override suspend fun connect(
             candidatePair: KQuicCandidatePair,
             identity: KQuicIdentity,
-            role: KQuicTransportRole
+            role: KQuicTransportRole,
+            localCredentials: KQuicConnectivityCredentials,
+            remoteCredentials: KQuicConnectivityCredentials
         ): KQuicRemoteIdentity = awaitCancellation()
 
         override fun openChannel(config: KQuicChannelConfig) = Unit
@@ -92,5 +137,6 @@ class KQuicPeerTest {
     private companion object {
         const val TEST_FINGERPRINT =
             "0000000000000000000000000000000000000000000000000000000000000000"
+        val TEST_CREDENTIALS = KQuicConnectivityCredentials("local-user", "local-password-123")
     }
 }

@@ -1,7 +1,6 @@
 package com.kerobit.kquic
 
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
 
 /**
  * Boundary between the stable peer facade and the QUIC protocol engine.
@@ -12,10 +11,14 @@ import kotlinx.coroutines.flow.emptyFlow
 internal interface KQuicTransport {
     val events: Flow<KQuicTransportEvent>
 
+    suspend fun gatherCandidates(): List<KQuicCandidate>
+
     suspend fun connect(
         candidatePair: KQuicCandidatePair,
         identity: KQuicIdentity,
-        role: KQuicTransportRole
+        role: KQuicTransportRole,
+        localCredentials: KQuicConnectivityCredentials,
+        remoteCredentials: KQuicConnectivityCredentials
     ): KQuicRemoteIdentity
 
     fun openChannel(config: KQuicChannelConfig)
@@ -56,27 +59,4 @@ internal data class KQuicTransportStats(
 
 internal fun interface KQuicTransportFactory {
     fun create(config: KQuicConfig): KQuicTransport
-}
-
-internal object UnavailableKQuicTransportFactory : KQuicTransportFactory {
-    override fun create(config: KQuicConfig): KQuicTransport = object : KQuicTransport {
-        override val events: Flow<KQuicTransportEvent> = emptyFlow()
-
-        override suspend fun connect(
-            candidatePair: KQuicCandidatePair,
-            identity: KQuicIdentity,
-            role: KQuicTransportRole
-        ): KQuicRemoteIdentity = throw KQuicError.TransportUnavailable()
-
-        override fun openChannel(config: KQuicChannelConfig) {
-            throw KQuicError.TransportUnavailable()
-        }
-
-        override fun send(label: String, payload: ByteArray, text: Boolean): Boolean {
-            throw KQuicError.TransportUnavailable()
-        }
-
-        override fun closeChannel(label: String) = Unit
-        override fun close() = Unit
-    }
 }

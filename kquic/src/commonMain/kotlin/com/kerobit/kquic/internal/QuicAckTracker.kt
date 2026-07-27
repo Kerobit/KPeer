@@ -9,6 +9,8 @@ internal class QuicAckTracker(
     private var ackElicitingSinceLastAck = 0
     private var largestReceivedAtMs = 0L
     private var immediateAck = false
+    val hasPendingAck: Boolean get() = ackElicitingSinceLastAck > 0
+    val ackDeadlineMs: Long get() = largestReceivedAtMs + DEFAULT_ACK_DELAY_MS
 
     init {
         require(maximumRanges > 0)
@@ -69,3 +71,5 @@ internal class QuicAckTracker(
         received.removeAll { it < oldestKept }
     }
 }
+
+private const val DEFAULT_ACK_DELAY_MS = 25L

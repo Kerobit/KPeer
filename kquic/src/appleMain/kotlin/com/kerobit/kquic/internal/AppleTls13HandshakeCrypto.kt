@@ -47,8 +47,10 @@ internal object AppleTls13HandshakeCrypto : Tls13HandshakeCrypto {
         CFRelease(publicKey)
         return object : Tls13KeyAgreement {
             override val publicKey: ByteArray = publicPoint
+            private var closed = false
 
             override fun deriveSharedSecret(peerPublicKey: ByteArray): ByteArray {
+                check(!closed) { "P-256 key agreement is closed" }
                 val peer = createP256PublicKey(peerPublicKey)
                 try {
                     val result = checkNotNull(
@@ -67,6 +69,13 @@ internal object AppleTls13HandshakeCrypto : Tls13HandshakeCrypto {
                     }
                 } finally {
                     CFRelease(peer)
+                }
+            }
+
+            override fun close() {
+                if (!closed) {
+                    closed = true
+                    CFRelease(privateKey)
                 }
             }
         }
@@ -104,38 +113,42 @@ internal object AppleTls13HandshakeCrypto : Tls13HandshakeCrypto {
 private object AppleTlsKeySchedulePrimitives : Tls13HashPrimitives {
     override fun sha256(data: ByteArray): ByteArray = appleSha256(data)
 
-    override fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
-        val output = ByteArray(32)
-        key.usePinned { keyPinned ->
-            if (data.isEmpty()) {
+    override fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray =
+        appleHmacSha256(key, data)
+
+}
+
+@OptIn(ExperimentalForeignApi::class)
+internal fun appleHmacSha256(key: ByteArray, data: ByteArray): ByteArray {
+    val output = ByteArray(32)
+    key.usePinned { keyPinned ->
+        if (data.isEmpty()) {
+            output.usePinned { outputPinned ->
+                CCHmac(
+                    kCCHmacAlgSHA256,
+                    keyPinned.addressOf(0),
+                    key.size.convert(),
+                    null,
+                    0u,
+                    outputPinned.addressOf(0)
+                )
+            }
+        } else {
+            data.usePinned { dataPinned ->
                 output.usePinned { outputPinned ->
                     CCHmac(
                         kCCHmacAlgSHA256,
                         keyPinned.addressOf(0),
                         key.size.convert(),
-                        null,
-                        0u,
+                        dataPinned.addressOf(0),
+                        data.size.convert(),
                         outputPinned.addressOf(0)
                     )
                 }
-            } else {
-                data.usePinned { dataPinned ->
-                    output.usePinned { outputPinned ->
-                        CCHmac(
-                            kCCHmacAlgSHA256,
-                            keyPinned.addressOf(0),
-                            key.size.convert(),
-                            dataPinned.addressOf(0),
-                            data.size.convert(),
-                            outputPinned.addressOf(0)
-                        )
-                    }
-                }
             }
         }
-        return output
     }
-
+    return output
 }
 
 @OptIn(ExperimentalForeignApi::class)

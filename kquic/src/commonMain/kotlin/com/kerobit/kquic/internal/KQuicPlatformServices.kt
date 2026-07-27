@@ -1,6 +1,5 @@
 package com.kerobit.kquic.internal
 
-import com.kerobit.kquic.KQuicCandidateSource
 import com.kerobit.kquic.KQuicError
 import com.kerobit.kquic.KQuicIdentityProvider
 
@@ -12,7 +11,6 @@ import com.kerobit.kquic.KQuicIdentityProvider
  */
 internal interface KQuicPlatformServices {
     val ephemeralIdentityProvider: KQuicIdentityProvider
-    val hostCandidateSource: KQuicCandidateSource?
     val datagramSocketFactory: KQuicDatagramSocketFactory?
     val cryptoPrimitives: QuicCryptoPrimitives?
     val handshakeCrypto: Tls13HandshakeCrypto?
@@ -30,7 +28,6 @@ internal object UnavailableKQuicPlatformServices : KQuicPlatformServices {
     override val ephemeralIdentityProvider = KQuicIdentityProvider {
         throw KQuicError.TransportUnavailable()
     }
-    override val hostCandidateSource: KQuicCandidateSource? = null
     override val datagramSocketFactory: KQuicDatagramSocketFactory? = null
     override val cryptoPrimitives: QuicCryptoPrimitives? = null
     override val handshakeCrypto: Tls13HandshakeCrypto? = null

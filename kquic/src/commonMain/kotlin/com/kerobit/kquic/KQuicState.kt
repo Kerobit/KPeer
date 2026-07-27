@@ -16,7 +16,9 @@ enum class KQuicChannelState { CONNECTING, OPEN, CLOSING, CLOSED }
 sealed class KQuicError(message: String) : IllegalStateException(message) {
     class InvalidSignal(message: String) : KQuicError(message)
     class InvalidChannel(message: String) : KQuicError(message)
-    class NoViableCandidatePair : KQuicError("No direct or relay candidate pair is available")
+    class CandidateGatheringFailed(message: String) : KQuicError(message)
+    class ConnectivityCheckFailed(message: String) : KQuicError(message)
+    class NoViableCandidatePair : KQuicError("No direct candidate pair is available")
     class UnsupportedDelivery(message: String) : KQuicError(message)
     class AuthenticationFailed(message: String) : KQuicError(message)
     class ProtocolViolation(message: String) : KQuicError(message)

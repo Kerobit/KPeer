@@ -33,6 +33,18 @@ internal class CommonQuicTlsSession(
         State.SERVER_WAIT_CLIENT_HELLO
     }
 
+    fun close() {
+        transcript.fill(0)
+        transcript = ByteArray(0)
+        handshakeSecrets?.let {
+            it.handshakeSecret.fill(0)
+            it.clientHandshakeTrafficSecret.fill(0)
+            it.serverHandshakeTrafficSecret.fill(0)
+        }
+        handshakeSecrets = null
+        keyAgreement.close()
+    }
+
     override suspend fun start(): List<QuicTlsEvent> {
         if (state != State.CLIENT_NEW) return emptyList()
         val clientHello = Tls13HelloCodec.encodeClientHello(

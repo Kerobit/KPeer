@@ -5,6 +5,7 @@ import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 internal object AndroidKQuicDatagramSocketFactory : KQuicDatagramSocketFactory {
@@ -12,7 +13,7 @@ internal object AndroidKQuicDatagramSocketFactory : KQuicDatagramSocketFactory {
         withContext(Dispatchers.IO) {
             val channel = DatagramChannel.open()
             try {
-                channel.configureBlocking(true)
+                channel.configureBlocking(false)
                 channel.bind(InetSocketAddress(localAddress.host, localAddress.port))
                 AndroidKQuicDatagramSocket(channel)
             } catch (error: Throwable) {
@@ -42,13 +43,20 @@ private class AndroidKQuicDatagramSocket(
     }
 
     override suspend fun receive(): KQuicInboundDatagram = withContext(Dispatchers.IO) {
-        check(!closed.get()) { "UDP socket is closed" }
         val buffer = ByteBuffer.allocate(MAX_UDP_DATAGRAM_SIZE)
-        val source = channel.receive(buffer) as InetSocketAddress
-        buffer.flip()
-        val payload = ByteArray(buffer.remaining())
-        buffer.get(payload)
-        KQuicInboundDatagram(source.toKQuicAddress(), payload)
+        while (true) {
+            check(!closed.get()) { "UDP socket is closed" }
+            buffer.clear()
+            val source = channel.receive(buffer) as? InetSocketAddress
+            if (source != null) {
+                buffer.flip()
+                val payload = ByteArray(buffer.remaining())
+                buffer.get(payload)
+                return@withContext KQuicInboundDatagram(source.toKQuicAddress(), payload)
+            }
+            delay(RECEIVE_POLL_DELAY_MS)
+        }
+        error("unreachable")
     }
 
     override fun close() {
@@ -68,3 +76,4 @@ private fun java.net.SocketAddress.toKQuicAddress(): KQuicSocketAddress {
 
 private const val MAX_UDP_PAYLOAD_SIZE = 65_507
 private const val MAX_UDP_DATAGRAM_SIZE = 65_535
+private const val RECEIVE_POLL_DELAY_MS = 2L

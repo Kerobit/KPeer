@@ -14,7 +14,8 @@ internal suspend fun createEphemeralKQuicIdentity(
     subjectPublicKeyInfoDer: ByteArray,
     randomSerial: ByteArray,
     sha256: (ByteArray) -> ByteArray,
-    signer: KQuicSigner
+    signer: KQuicSigner,
+    releasePlatformKey: (() -> Unit)? = null
 ): KQuicIdentity {
     require(subjectPublicKeyInfoDer.isNotEmpty())
     require(randomSerial.isNotEmpty())
@@ -72,7 +73,8 @@ internal suspend fun createEphemeralKQuicIdentity(
     return KQuicIdentity.platformGenerated(
         certificateChainDer = listOf(certificate),
         signer = signer,
-        publicKeySha256 = sha256(subjectPublicKeyInfoDer).toHex()
+        publicKeySha256 = sha256(subjectPublicKeyInfoDer).toHex(),
+        releasePlatformKey = releasePlatformKey
     )
 }
 

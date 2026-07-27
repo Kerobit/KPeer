@@ -25,7 +25,7 @@ kotlin {
     android {
         namespace = "com.kerobit.kquic"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
-        minSdk = libs.versions.android.minSdk.get().toInt()
+        minSdk = libs.versions.android.kquic.minSdk.get().toInt()
 
         withJava()
         withHostTestBuilder {}.configure {}
@@ -48,7 +48,7 @@ kotlin {
         name = cocoaPodName
         homepage = "https://kerobit.com"
         version = version.toString()
-        ios.deploymentTarget = "17.0"
+        ios.deploymentTarget = "16.0"
         osx.deploymentTarget = "11.0"
         framework {
             baseName = appleFrameworkName
