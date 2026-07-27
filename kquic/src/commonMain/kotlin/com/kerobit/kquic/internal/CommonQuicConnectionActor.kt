@@ -5,10 +5,12 @@ import com.kerobit.kquic.KQuicConfig
 import com.kerobit.kquic.KQuicDelivery
 import com.kerobit.kquic.KQuicError
 import com.kerobit.kquic.KQuicIdentity
+import com.kerobit.kquic.KQuicLogger
 import com.kerobit.kquic.KQuicRemoteIdentity
 import com.kerobit.kquic.KQuicTransportEvent
 import com.kerobit.kquic.KQuicTransportRole
 import com.kerobit.kquic.KQuicTransportStats
+import com.kerobit.kquic.NoOpKQuicLogger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -34,7 +36,8 @@ internal class CommonQuicConnectionActor(
     private val identity: KQuicIdentity,
     private val config: KQuicConfig,
     private val platformServices: KQuicPlatformServices,
-    private val emitEvent: suspend (KQuicTransportEvent) -> Unit
+    private val emitEvent: suspend (KQuicTransportEvent) -> Unit,
+    private val logger: KQuicLogger = NoOpKQuicLogger
 ) {
     private sealed interface Command {
         data class Inbound(val datagram: KQuicInboundDatagram) : Command
@@ -210,6 +213,10 @@ internal class CommonQuicConnectionActor(
 
     private fun start() {
         started = true
+        logger.info(
+            "Starting QUIC handshake role=$role idleTimeoutMs=${config.idleTimeoutMs}"
+        )
+        logger.debug("QUIC remote endpoint=$remoteAddress")
         scope.launch { runActor() }
         scope.launch {
             try {
@@ -257,6 +264,11 @@ internal class CommonQuicConnectionActor(
         } catch (error: Throwable) {
             val mapped = error as? KQuicError
                 ?: KQuicError.TransportFailure(error.message ?: "QUIC actor failed")
+            logger.error(
+                "QUIC actor failed reason=${mapped.message.orEmpty()} " +
+                    "packetsSent=$packetsSent packetsReceived=$packetsReceived " +
+                    "bytesSent=$bytesSent bytesReceived=$bytesReceived"
+            )
             if (!connected.isCompleted) connected.completeExceptionally(mapped)
             emitEvent(KQuicTransportEvent.Failed(mapped))
         } finally {
@@ -331,7 +343,7 @@ internal class CommonQuicConnectionActor(
 
     private suspend fun handleInbound(datagram: KQuicInboundDatagram) {
         if (closing || StunProtocol.isStun(datagram.payload)) return
-        if (datagram.source.port != remoteAddress.port) return
+        if (datagram.source != remoteAddress) return
         lastActivityMs = nowMs()
         bytesReceived += datagram.payload.size
         packetsReceived++
@@ -341,6 +353,7 @@ internal class CommonQuicConnectionActor(
             shortHeaderDestinationIdLength = localConnectionId.size
         )
         if (endpointRole == QuicEndpointRole.SERVER && tls == null) {
+            logger.debug("Received first QUIC Initial datagram from ${datagram.source}")
             val long = invariant as? QuicInvariantHeader.Long
                 ?: throw KQuicError.ProtocolViolation("First QUIC packet must use a long header")
             if (datagram.payload.size < QuicInitialDatagrams.MINIMUM_SIZE) {
@@ -488,11 +501,20 @@ internal class CommonQuicConnectionActor(
                         write = keySchedule.quicPacketProtectionKeys(event.secrets.write)
                     )
                 }
-                is QuicTlsEvent.RemoteIdentityAvailable -> remoteIdentity = event.identity
-                is QuicTlsEvent.TransportParametersAvailable ->
+                is QuicTlsEvent.RemoteIdentityAvailable -> {
+                    remoteIdentity = event.identity
+                    logger.debug(
+                        "TLS remote identity available fingerprint=" +
+                            "${event.identity.publicKeySha256.take(8)}…"
+                    )
+                }
+                is QuicTlsEvent.TransportParametersAvailable -> {
                     applyRemoteParameters(event.parameters)
+                    logger.debug("QUIC remote transport parameters accepted")
+                }
                 QuicTlsEvent.HandshakeComplete -> {
                     tlsComplete = true
+                    logger.info("TLS 1.3 handshake complete role=$role")
                     if (endpointRole == QuicEndpointRole.SERVER) {
                         enqueue(QuicEncryptionLevel.ONE_RTT, QuicFrame.HandshakeDone, true)
                     }
@@ -983,6 +1005,9 @@ internal class CommonQuicConnectionActor(
 
     private fun completeConnection() {
         if (!handshakeConfirmed || !tlsComplete || connected.isCompleted) return
+        logger.info(
+            "QUIC handshake confirmed packetsSent=$packetsSent packetsReceived=$packetsReceived"
+        )
         connected.complete(
             remoteIdentity ?: throw KQuicError.AuthenticationFailed(
                 "TLS completed without a remote identity"

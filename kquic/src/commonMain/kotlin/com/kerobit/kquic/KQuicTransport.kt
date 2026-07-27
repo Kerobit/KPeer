@@ -27,6 +27,10 @@ internal interface KQuicTransport {
     fun close()
 }
 
+internal interface KQuicDiagnosticsAware {
+    var diagnosticLogger: KQuicLogger
+}
+
 internal enum class KQuicTransportRole {
     CLIENT,
     SERVER

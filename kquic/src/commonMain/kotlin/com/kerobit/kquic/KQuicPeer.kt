@@ -24,7 +24,8 @@ import kotlinx.coroutines.sync.withLock
 @ExperimentalKQuicApi
 class KQuicPeer(
     private val context: KQuicContext,
-    private val config: KQuicConfig
+    private val config: KQuicConfig,
+    private val logger: KQuicLogger = NoOpKQuicLogger
 ) {
     private val _signals = MutableSharedFlow<KQuicSignal>(replay = 64, extraBufferCapacity = 64)
     private val _channels = MutableSharedFlow<KQuicChannel>(extraBufferCapacity = 16)
@@ -36,7 +37,9 @@ class KQuicPeer(
     private val emittedChannelLabels = mutableSetOf<String>()
     private val attemptedCandidatePairs = mutableSetOf<KQuicCandidatePair>()
     private val stateMutex = Mutex()
-    private val transport = context.transportFactory.create(config)
+    private val transport = context.transportFactory.create(config).also {
+        if (it is KQuicDiagnosticsAware) it.diagnosticLogger = logger
+    }
     private val transportEventsJob: Job
     private val identityReady = CompletableDeferred<KQuicIdentity>()
     private val gatheringReady = CompletableDeferred<Unit>()
@@ -72,7 +75,12 @@ class KQuicPeer(
     /** Starts local candidate gathering and emits an offer from the signaling initiator. */
     fun start() {
         if (started || closed) return
-        _state.value = KQuicPeerConnectionState.GATHERING
+        logger.info(
+            "Starting role=${config.quicRole} gatheringTimeoutMs=" +
+                "${config.candidateGatheringTimeoutMs} connectivityCheckTimeoutMs=" +
+                "${config.connectivityCheckTimeoutMs} connectionTimeoutMs=${config.connectionTimeoutMs}"
+        )
+        transitionTo(KQuicPeerConnectionState.GATHERING)
         started = true
         identityAndGatheringJob = context.scope.launch {
             try {
@@ -95,6 +103,8 @@ class KQuicPeer(
                 transport.gatherCandidates().forEach(localCandidates::add)
                 stateMutex.withLock {
                     localGatheringComplete = true
+                    logger.info("Local candidate gathering complete: ${localCandidates.summary()}")
+                    logger.debug("Local candidates: ${localCandidates.debugSummary()}")
                     if (!gatheringReady.isCompleted) gatheringReady.complete(Unit)
                     if (config.initiator && !localSignalSent) {
                         emitInitialSignal()
@@ -118,6 +128,8 @@ class KQuicPeer(
         if (remote.rendezvousId != config.rendezvousId) {
             throw KQuicError.InvalidSignal("Signal rendezvousId does not match this peer")
         }
+        logger.info("Received ${remote.signalSummary()}")
+        logger.debug("Remote candidates in signal: ${remote.candidates().debugSummary()}")
         if (!started) start()
         if (remote is KQuicOffer && !config.initiator) {
             identityReady.await()
@@ -197,13 +209,14 @@ class KQuicPeer(
 
     fun close() {
         if (closed) return
+        logger.info("Closing KQuic peer")
         closed = true
         identityAndGatheringJob?.cancel()
         connectionJob?.cancel()
         transportEventsJob.cancel()
         channelsByLabel.values.forEach { it.markClosed() }
         transport.close()
-        _state.value = KQuicPeerConnectionState.CLOSED
+        transitionTo(KQuicPeerConnectionState.CLOSED)
     }
 
     fun dispose() {
@@ -235,18 +248,24 @@ class KQuicPeer(
             }
         }
         _stats.value = _stats.value.copy(selectedCandidatePair = pair)
-        _state.value = KQuicPeerConnectionState.CONNECTED
+        logger.info("QUIC handshake authenticated for ${pair.summary()}")
+        transitionTo(KQuicPeerConnectionState.CONNECTED)
     }
 
     internal fun fail(error: KQuicError) {
         if (closed || _state.value == KQuicPeerConnectionState.FAILED) return
+        logger.error(
+            "Connection failed error=${error.kind()} reason=${error.message.orEmpty()} " +
+                "attemptedPairs=${attemptedCandidatePairs.size} " +
+                "selectedPair=${_stats.value.selectedCandidatePair?.summary() ?: "none"}"
+        )
         identityAndGatheringJob?.cancel()
         connectionJob?.cancel()
         transportEventsJob.cancel()
         channelsByLabel.values.forEach { it.markClosed() }
         transport.close()
         _stats.value = _stats.value.copy(closeReason = error.message)
-        _state.value = KQuicPeerConnectionState.FAILED
+        transitionTo(KQuicPeerConnectionState.FAILED)
     }
 
     private fun addRemoteCandidateLocked(candidate: KQuicCandidate) {
@@ -265,7 +284,12 @@ class KQuicPeer(
             ?: return
         attemptedCandidatePairs += selected
         _stats.value = _stats.value.copy(selectedCandidatePair = selected)
-        _state.value = KQuicPeerConnectionState.CONNECTING
+        logger.info(
+            "Trying candidate pair ${attemptedCandidatePairs.size}: " +
+                "${selected.redactedSummary()}"
+        )
+        logger.debug("Candidate pair details: ${selected.summary()}")
+        transitionTo(KQuicPeerConnectionState.CONNECTING)
         connectionJob = context.scope.launch {
             try {
                 val identity = identityReady.await()
@@ -289,7 +313,8 @@ class KQuicPeer(
                     remoteConnectivity
                 )
                 stateMutex.withLock {
-                    _state.value = KQuicPeerConnectionState.AUTHENTICATING
+                    logger.info("Connectivity and QUIC handshake completed; verifying peer identity")
+                    transitionTo(KQuicPeerConnectionState.AUTHENTICATING)
                     confirmHandshake(selected, remoteIdentity)
                 }
             } catch (error: KQuicError) {
@@ -307,6 +332,10 @@ class KQuicPeer(
     private suspend fun candidateAttemptFailed(error: KQuicError) {
         stateMutex.withLock {
             if (closed) return
+            logger.warn(
+                "Candidate pair failed error=${error.kind()} reason=${error.message.orEmpty()} " +
+                    "pair=${_stats.value.selectedCandidatePair?.redactedSummary() ?: "none"}"
+            )
             lastConnectionError = error
             connectionJob = null
             if (error is KQuicError.ConnectionTimedOut) {
@@ -323,6 +352,10 @@ class KQuicPeer(
         val hasUntriedPair = KQuicCandidateSelector.orderedPairs(localCandidates, remoteCandidates)
             .any { it !in attemptedCandidatePairs }
         if (!hasUntriedPair && attemptedCandidatePairs.isNotEmpty()) {
+            logger.warn(
+                "Candidate pairs exhausted attempted=${attemptedCandidatePairs.size} " +
+                    "local=${localCandidates.size} remote=${remoteCandidates.size}"
+            )
             fail(lastConnectionError ?: KQuicError.TransportFailure("No candidate pair connected"))
         }
     }
@@ -378,10 +411,17 @@ class KQuicPeer(
             is KQuicTransportEvent.ChannelClosed -> channelsByLabel[event.label]?.markClosed()
             is KQuicTransportEvent.Disconnected -> {
                 if (_state.value == KQuicPeerConnectionState.FAILED) return
+                logger.warn("Transport disconnected reason=${event.reason ?: "none"}")
                 _stats.value = _stats.value.copy(closeReason = event.reason)
-                _state.value = KQuicPeerConnectionState.DISCONNECTED
+                transitionTo(KQuicPeerConnectionState.DISCONNECTED)
             }
-            is KQuicTransportEvent.Failed -> fail(event.error)
+            is KQuicTransportEvent.Failed -> {
+                logger.error(
+                    "Transport event failed error=${event.error.kind()} " +
+                        "reason=${event.error.message.orEmpty()}"
+                )
+                fail(event.error)
+            }
             is KQuicTransportEvent.StatsUpdated -> {
                 val selectedPair = _stats.value.selectedCandidatePair
                 _stats.value = KQuicStats(
@@ -433,6 +473,10 @@ class KQuicPeer(
                 endOfCandidates = localGatheringComplete
             )
         )
+        logger.info(
+            "Emitted offer candidates=${localCandidates.size} " +
+                "endOfCandidates=$localGatheringComplete"
+        )
         localSignalSent = true
     }
 
@@ -467,4 +511,61 @@ class KQuicPeer(
 
     private val KQuicConfig.quicRole: KQuicTransportRole
         get() = if (initiator) KQuicTransportRole.CLIENT else KQuicTransportRole.SERVER
+
+    private fun transitionTo(next: KQuicPeerConnectionState) {
+        val previous = _state.value
+        if (previous == next) return
+        _state.value = next
+        logger.info("State $previous -> $next")
+    }
+
+    private fun KQuicSignal.signalSummary(): String = when (this) {
+        is KQuicOffer ->
+            "offer candidates=${candidates.size} endOfCandidates=$endOfCandidates"
+        is KQuicAnswer ->
+            "answer candidates=${candidates.size} endOfCandidates=$endOfCandidates"
+        is KQuicCandidateUpdate ->
+            "candidate update candidates=${candidates.size} endOfCandidates=$endOfCandidates"
+        is KQuicEndOfCandidates -> "end of candidates"
+    }
+
+    private fun KQuicSignal.candidates(): List<KQuicCandidate> = when (this) {
+        is KQuicOffer -> candidates
+        is KQuicAnswer -> candidates
+        is KQuicCandidateUpdate -> candidates
+        is KQuicEndOfCandidates -> emptyList()
+    }
+
+    private fun Collection<KQuicCandidate>.summary(): String =
+        KQuicCandidateType.entries.joinToString(separator = " ") { type ->
+            "${type.name.lowercase()}=${count { it.type == type }}"
+        } + " total=$size"
+
+    private fun Collection<KQuicCandidate>.debugSummary(): String =
+        if (isEmpty()) "none" else joinToString { it.summary() }
+
+    private fun KQuicCandidate.summary(): String =
+        "${type.name.lowercase()}:$host:$port foundation=$foundation priority=$priority"
+
+    private fun KQuicCandidatePair.summary(): String =
+        "local=[${local.summary()}] remote=[${remote.summary()}]"
+
+    private fun KQuicCandidatePair.redactedSummary(): String =
+        "local=${local.type.name.lowercase()}/${local.foundation} " +
+            "remote=${remote.type.name.lowercase()}/${remote.foundation}"
+
+    private fun KQuicError.kind(): String = when (this) {
+        is KQuicError.InvalidSignal -> "InvalidSignal"
+        is KQuicError.InvalidChannel -> "InvalidChannel"
+        is KQuicError.CandidateGatheringFailed -> "CandidateGatheringFailed"
+        is KQuicError.ConnectivityCheckFailed -> "ConnectivityCheckFailed"
+        is KQuicError.NoViableCandidatePair -> "NoViableCandidatePair"
+        is KQuicError.UnsupportedDelivery -> "UnsupportedDelivery"
+        is KQuicError.AuthenticationFailed -> "AuthenticationFailed"
+        is KQuicError.ProtocolViolation -> "ProtocolViolation"
+        is KQuicError.TransportFailure -> "TransportFailure"
+        is KQuicError.ConnectionTimedOut -> "ConnectionTimedOut"
+        is KQuicError.MessageTooLarge -> "MessageTooLarge"
+        is KQuicError.TransportUnavailable -> "TransportUnavailable"
+    }
 }

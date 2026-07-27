@@ -8,12 +8,15 @@ import com.kerobit.kquic.KQuicConfig
 import com.kerobit.kquic.KQuicConnectivityCredentials
 import com.kerobit.kquic.KQuicError
 import com.kerobit.kquic.KQuicIdentity
+import com.kerobit.kquic.KQuicDiagnosticsAware
+import com.kerobit.kquic.KQuicLogger
 import com.kerobit.kquic.KQuicRemoteIdentity
 import com.kerobit.kquic.KQuicStunServer
 import com.kerobit.kquic.KQuicTransport
 import com.kerobit.kquic.KQuicTransportEvent
 import com.kerobit.kquic.KQuicTransportFactory
 import com.kerobit.kquic.KQuicTransportRole
+import com.kerobit.kquic.NoOpKQuicLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -32,7 +35,7 @@ private class CommonKQuicTransport(
     private val scope: CoroutineScope,
     private val platformServices: KQuicPlatformServices,
     private val config: KQuicConfig
-) : KQuicTransport {
+) : KQuicTransport, KQuicDiagnosticsAware {
     private data class BoundCandidate(
         val candidate: KQuicCandidate,
         val socket: KQuicDatagramSocket
@@ -42,6 +45,7 @@ private class CommonKQuicTransport(
         extraBufferCapacity = config.limits.maxBufferedPackets.coerceAtMost(1_024)
     )
     override val events: Flow<KQuicTransportEvent> = mutableEvents.asSharedFlow()
+    override var diagnosticLogger: KQuicLogger = NoOpKQuicLogger
 
     private val candidatesByFoundation = linkedMapOf<String, BoundCandidate>()
     private val ownedSockets = linkedSetOf<KQuicDatagramSocket>()
@@ -61,12 +65,26 @@ private class CommonKQuicTransport(
         val addresses = platformServices.hostAddresses()
             .filterNot { it.startsWith("fe80:", ignoreCase = true) }
             .ifEmpty { listOf("127.0.0.1") }
+        diagnosticLogger.info(
+            "Gathering UDP candidates hostAddresses=${addresses.size} " +
+                "stunServers=${config.stunServers.size}"
+        )
+        diagnosticLogger.debug("Host addresses: ${addresses.joinToString()}")
 
         addresses.forEachIndexed { index, address ->
-            val socket = runCatching {
+            val socketResult = runCatching {
                 socketFactory.bind(KQuicSocketAddress(address, 0))
-            }.getOrNull() ?: return@forEachIndexed
+            }
+            val socket = socketResult.getOrNull()
+            if (socket == null) {
+                diagnosticLogger.warn(
+                    "UDP bind failed address=$address reason=" +
+                        "${socketResult.exceptionOrNull()?.message ?: "unknown"}"
+                )
+                return@forEachIndexed
+            }
             ownedSockets += socket
+            diagnosticLogger.debug("UDP socket bound address=${socket.localAddress}")
             if (config.gatherHostCandidates) {
                 register(
                     KQuicCandidate(
@@ -84,7 +102,7 @@ private class CommonKQuicTransport(
             throw KQuicError.CandidateGatheringFailed("No UDP socket could be bound")
         }
 
-        withTimeoutOrNull(config.candidateGatheringTimeoutMs) {
+        val stunGatheringCompleted = withTimeoutOrNull(config.candidateGatheringTimeoutMs) {
             ownedSockets.toList().forEachIndexed { socketIndex, socket ->
                 config.stunServers.forEachIndexed { serverIndex, server ->
                     discoverServerReflexive(socket, server)?.let { mapped ->
@@ -107,6 +125,13 @@ private class CommonKQuicTransport(
                     }
                 }
             }
+            true
+        } ?: false
+        if (!stunGatheringCompleted) {
+            diagnosticLogger.warn(
+                "STUN gathering timed out after ${config.candidateGatheringTimeoutMs} ms; " +
+                    "continuing with ${candidatesByFoundation.size} gathered candidates"
+            )
         }
         gathered = true
         if (candidatesByFoundation.isEmpty()) {
@@ -135,8 +160,17 @@ private class CommonKQuicTransport(
             candidatePair.remote.host,
             candidatePair.remote.port
         )
+        diagnosticLogger.info(
+            "Starting authenticated connectivity check role=$role " +
+                "timeoutMs=${config.connectivityCheckTimeoutMs}"
+        )
+        diagnosticLogger.debug(
+            "Connectivity endpoints local=${local.socket.localAddress} remote=$remoteAddress"
+        )
         pendingIdentity = identity
-        performConnectivityCheck(
+        // The authenticated check can reveal a peer-reflexive endpoint when NAT rewrites the
+        // address or port. QUIC must use that observed endpoint, not the signaled candidate.
+        val validatedRemoteAddress = performConnectivityCheck(
             socket = local.socket,
             remoteAddress = remoteAddress,
             role = role,
@@ -144,17 +178,23 @@ private class CommonKQuicTransport(
             remoteCredentials = remoteCredentials,
             priority = candidatePair.local.priority
         )
+        diagnosticLogger.info("Authenticated connectivity check succeeded")
+        diagnosticLogger.debug(
+            "Connectivity endpoint validated signaledRemote=$remoteAddress " +
+                "validatedRemote=$validatedRemoteAddress"
+        )
 
         ownedSockets.filter { it !== local.socket }.forEach(KQuicDatagramSocket::close)
         ownedSockets.retainAll(listOf(local.socket))
         val connectionActor = CommonQuicConnectionActor(
             parentScope = scope,
             socket = local.socket,
-            remoteAddress = remoteAddress,
+            remoteAddress = validatedRemoteAddress,
             role = role,
             identity = identity,
             config = config,
             platformServices = platformServices,
+            logger = diagnosticLogger,
             emitEvent = { mutableEvents.emit(it) }
         )
         actor = connectionActor
@@ -196,10 +236,21 @@ private class CommonKQuicTransport(
         server: KQuicStunServer
     ): KQuicSocketAddress? {
         val destination = KQuicSocketAddress(server.host, server.port)
-        repeat(STUN_MAX_ATTEMPTS) {
+        repeat(STUN_MAX_ATTEMPTS) { attempt ->
+            diagnosticLogger.debug(
+                "STUN binding attempt=${attempt + 1}/$STUN_MAX_ATTEMPTS " +
+                    "server=$destination local=${socket.localAddress}"
+            )
             val transactionId = platformServices.secureRandom(12)
             val request = StunProtocol.bindingDiscoveryRequest(transactionId)
-            if (runCatching { socket.send(destination, request) }.isFailure) return null
+            val sendResult = runCatching { socket.send(destination, request) }
+            if (sendResult.isFailure) {
+                diagnosticLogger.warn(
+                    "STUN send failed server=$destination local=${socket.localAddress} " +
+                        "reason=${sendResult.exceptionOrNull()?.message ?: "unknown"}"
+                )
+                return null
+            }
             val response = withTimeoutOrNull(STUN_ATTEMPT_TIMEOUT_MS) {
                 while (true) {
                     val inbound = socket.receive()
@@ -215,8 +266,18 @@ private class CommonKQuicTransport(
                 }
                 null
             }
-            if (response != null) return response
+            if (response != null) {
+                diagnosticLogger.info("STUN server-reflexive candidate discovered")
+                diagnosticLogger.debug(
+                    "STUN mapped local=${socket.localAddress} server=$destination mapped=$response"
+                )
+                return response
+            }
         }
+        diagnosticLogger.warn(
+            "STUN server did not answer server=$destination local=${socket.localAddress} " +
+                "attempts=$STUN_MAX_ATTEMPTS"
+        )
         return null
     }
 
@@ -227,14 +288,20 @@ private class CommonKQuicTransport(
         localCredentials: KQuicConnectivityCredentials,
         remoteCredentials: KQuicConnectivityCredentials,
         priority: Long
-    ) {
+    ): KQuicSocketAddress {
         val hmac = requireNotNull(platformServices.handshakeCrypto).primitives::hmacSha256
         val controlling = role == KQuicTransportRole.CLIENT
         val tieBreaker = randomULong()
         val expectedUsername =
             "${localCredentials.usernameFragment}:${remoteCredentials.usernameFragment}"
-        val validated = withTimeoutOrNull(config.connectivityCheckTimeoutMs) {
+        var attempts = 0
+        var inboundStunPackets = 0
+        var authenticatedPackets = 0
+        val validatedRemoteAddress = withTimeoutOrNull(
+            config.connectivityCheckTimeoutMs
+        ) connectivityCheck@{
             while (true) {
+                attempts++
                 val transactionId = platformServices.secureRandom(12)
                 val request = StunProtocol.connectivityRequest(
                     transactionId = transactionId,
@@ -246,11 +313,17 @@ private class CommonKQuicTransport(
                     tieBreaker = tieBreaker,
                     hmacSha256 = hmac
                 )
+                diagnosticLogger.debug(
+                    "Connectivity check attempt=$attempts destination=$remoteAddress"
+                )
                 socket.send(remoteAddress, request)
-                val result = withTimeoutOrNull(CONNECTIVITY_ATTEMPT_TIMEOUT_MS) {
+                val result = withTimeoutOrNull(
+                    CONNECTIVITY_ATTEMPT_TIMEOUT_MS
+                ) attempt@{
                     while (true) {
                         val inbound = socket.receive()
                         if (!StunProtocol.isStun(inbound.payload)) continue
+                        inboundStunPackets++
                         val requestMessage = runCatching {
                             StunProtocol.decode(
                                 inbound.payload,
@@ -268,6 +341,7 @@ private class CommonKQuicTransport(
                                 ) {
                                     continue
                                 }
+                                authenticatedPackets++
                                 socket.send(
                                     inbound.source,
                                     StunProtocol.bindingSuccessResponse(
@@ -280,7 +354,10 @@ private class CommonKQuicTransport(
                                 if (!controlling &&
                                     requestMessage.attribute(StunProtocol.USE_CANDIDATE) != null
                                 ) {
-                                    return@withTimeoutOrNull true
+                                    diagnosticLogger.debug(
+                                        "Authenticated USE_CANDIDATE received from ${inbound.source}"
+                                    )
+                                    return@attempt inbound.source
                                 }
                             }
                             StunProtocol.BINDING_SUCCESS_RESPONSE -> {
@@ -295,22 +372,33 @@ private class CommonKQuicTransport(
                                     response.integrityValid == true &&
                                     response.transactionId.contentEquals(transactionId)
                                 ) {
-                                    return@withTimeoutOrNull true
+                                    authenticatedPackets++
+                                    diagnosticLogger.debug(
+                                        "Authenticated connectivity response received from " +
+                                            "${inbound.source}"
+                                    )
+                                    return@attempt inbound.source
                                 }
                             }
                         }
                     }
-                    false
+                    null
                 }
-                if (result == true) return@withTimeoutOrNull true
+                if (result != null) return@connectivityCheck result
             }
-            false
+            null
         }
-        if (validated != true) {
+        if (validatedRemoteAddress == null) {
+            diagnosticLogger.warn(
+                "Authenticated connectivity check timed out attempts=$attempts " +
+                    "inboundStunPackets=$inboundStunPackets " +
+                    "authenticatedPackets=$authenticatedPackets"
+            )
             throw KQuicError.ConnectivityCheckFailed(
                 "No candidate pair passed authenticated connectivity checks"
             )
         }
+        return validatedRemoteAddress
     }
 
     private fun randomULong(): ULong {

@@ -64,7 +64,13 @@ class KQuicPeerTransportTest {
     @Test
     fun connection_timeout_fails_and_closes_the_transport() = runBlocking {
         val transport = TestTransport(connectForever = true)
-        val peer = peer(initiator = true, transport, connectionTimeoutMs = 50)
+        val logger = RecordingLogger()
+        val peer = peer(
+            initiator = true,
+            transport = transport,
+            connectionTimeoutMs = 50,
+            logger = logger
+        )
 
         peer.signal(
             KQuicAnswer(
@@ -80,6 +86,12 @@ class KQuicPeerTransportTest {
         }
         assertTrue(transport.closed)
         assertTrue(peer.stats.first().closeReason.orEmpty().contains("50 ms"))
+        assertTrue(logger.messages.any {
+            it.contains("ConnectionTimedOut") &&
+                it.contains("QUIC connection did not complete within 50 ms")
+        })
+        assertTrue(logger.messages.any { it.contains("Candidate pair failed") })
+        assertTrue(logger.messages.none { it.contains(TEST_CREDENTIALS.password) })
         peer.close()
     }
 
@@ -131,7 +143,8 @@ class KQuicPeerTransportTest {
     private fun kotlinx.coroutines.CoroutineScope.peer(
         initiator: Boolean,
         transport: TestTransport,
-        connectionTimeoutMs: Long? = 30_000
+        connectionTimeoutMs: Long? = 30_000,
+        logger: KQuicLogger = NoOpKQuicLogger
     ): KQuicPeer = KQuicPeer(
         context = KQuicContext(
             scope = this,
@@ -147,7 +160,8 @@ class KQuicPeerTransportTest {
             ),
             gatherHostCandidates = false,
             connectionTimeoutMs = connectionTimeoutMs
-        )
+        ),
+        logger = logger
     )
 
     private suspend fun awaitConnected(peer: KQuicPeer) {
@@ -246,6 +260,26 @@ class KQuicPeerTransportTest {
         override fun send(label: String, payload: ByteArray, text: Boolean): Boolean = true
         override fun closeChannel(label: String) = Unit
         override fun close() = Unit
+    }
+
+    private class RecordingLogger : KQuicLogger {
+        val messages = mutableListOf<String>()
+
+        override fun debug(message: String) {
+            messages += message
+        }
+
+        override fun info(message: String) {
+            messages += message
+        }
+
+        override fun warn(message: String) {
+            messages += message
+        }
+
+        override fun error(message: String) {
+            messages += message
+        }
     }
 
     private fun testIdentity() = KQuicIdentity.platformGenerated(

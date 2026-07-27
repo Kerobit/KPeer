@@ -14,9 +14,12 @@ import com.kerobit.kquic.KQuicPeerConnectionState
 import com.kerobit.kquic.KQuicSecurity
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
@@ -125,6 +128,59 @@ class CommonKQuicLoopbackTest {
     }
 
     @Test
+    fun connectivity_check_uses_the_peer_reflexive_endpoint_after_nat_translation() = runBlocking {
+        val network = AsymmetricNatDatagramNetwork()
+        val initiatorEndpoint = NatEndpoint(
+            privateAddress = KQuicSocketAddress("10.0.2.16", 41_000),
+            translatedAddress = KQuicSocketAddress("192.168.1.200", 51_000),
+            privateAddressReachable = false,
+        )
+        val responderEndpoint = NatEndpoint(
+            privateAddress = KQuicSocketAddress("192.168.1.139", 42_000),
+            translatedAddress = KQuicSocketAddress("192.168.1.139", 42_000),
+            privateAddressReachable = true,
+        )
+        val initiator = natPeer(true, initiatorEndpoint, network)
+        val responder = natPeer(false, responderEndpoint, network)
+        try {
+            val offer = async(start = CoroutineStart.UNDISPATCHED) {
+                initiator.signals.filterIsInstance<KQuicOffer>().first()
+            }
+            initiator.start()
+            val answer = async(start = CoroutineStart.UNDISPATCHED) {
+                responder.signals.filterIsInstance<KQuicAnswer>().first()
+            }
+            responder.signal(withTimeout(5_000) { offer.await() })
+            initiator.signal(withTimeout(5_000) { answer.await() })
+
+            withTimeout(10_000) {
+                initiator.connectionState.first { it == KQuicPeerConnectionState.CONNECTED }
+            }
+            withTimeout(10_000) {
+                responder.connectionState.first { it == KQuicPeerConnectionState.CONNECTED }
+            }
+
+            val incomingChannel = async(start = CoroutineStart.UNDISPATCHED) {
+                responder.channels.first()
+            }
+            val outbound = initiator.createChannel(KQuicChannelConfig("nat-reliable"))
+            val inbound = withTimeout(5_000) { incomingChannel.await() }
+            val received = async(start = CoroutineStart.UNDISPATCHED) {
+                inbound.bytes.first()
+            }
+            assertTrue(outbound.send(byteArrayOf(9, 8, 7)))
+            assertContentEquals(
+                byteArrayOf(9, 8, 7),
+                withTimeout(5_000) { received.await() },
+            )
+            assertTrue(network.droppedPacketsToUnreachablePrivateAddress > 0)
+        } finally {
+            initiator.close()
+            responder.close()
+        }
+    }
+
+    @Test
     fun authenticated_signaling_rejects_a_tampered_identity_fingerprint() = runBlocking {
         val initiator = peer(true)
         val responder = peer(false)
@@ -213,4 +269,95 @@ class CommonKQuicLoopbackTest {
             connectivityCheckTimeoutMs = connectivityTimeoutMs
         )
     )
+
+    private fun kotlinx.coroutines.CoroutineScope.natPeer(
+        initiator: Boolean,
+        endpoint: NatEndpoint,
+        network: AsymmetricNatDatagramNetwork,
+    ): KQuicPeer {
+        val platformServices = NatKQuicPlatformServices(
+            delegate = createKQuicPlatformServices(null),
+            datagramSocketFactory = network.factory(endpoint),
+            hostAddress = endpoint.privateAddress.host,
+        )
+        return KQuicPeer(
+            context = KQuicContext(
+                scope = this,
+                platformContext = null,
+                transportFactory = CommonKQuicTransportFactory(this, platformServices),
+                platformServices = platformServices,
+            ),
+            config = KQuicConfig(
+                initiator = initiator,
+                rendezvousId = "nat-loopback-test",
+                security = KQuicSecurity.ephemeralWithAuthenticatedSignaling(),
+                connectionTimeoutMs = 10_000,
+                connectivityCheckTimeoutMs = 2_000,
+            ),
+        )
+    }
+}
+
+private data class NatEndpoint(
+    val privateAddress: KQuicSocketAddress,
+    val translatedAddress: KQuicSocketAddress,
+    val privateAddressReachable: Boolean,
+)
+
+private class NatKQuicPlatformServices(
+    delegate: KQuicPlatformServices,
+    override val datagramSocketFactory: KQuicDatagramSocketFactory,
+    private val hostAddress: String,
+) : KQuicPlatformServices by delegate {
+    override fun hostAddresses(): List<String> = listOf(hostAddress)
+}
+
+private class AsymmetricNatDatagramNetwork {
+    private val mutex = Mutex()
+    private val routes = mutableMapOf<KQuicSocketAddress, Channel<KQuicInboundDatagram>>()
+    var droppedPacketsToUnreachablePrivateAddress: Int = 0
+        private set
+
+    fun factory(endpoint: NatEndpoint): KQuicDatagramSocketFactory =
+        KQuicDatagramSocketFactory { requestedAddress ->
+            require(requestedAddress.host == endpoint.privateAddress.host)
+            require(requestedAddress.port == 0)
+            val inbound = Channel<KQuicInboundDatagram>(Channel.UNLIMITED)
+            mutex.withLock {
+                check(routes.put(endpoint.translatedAddress, inbound) == null)
+                if (endpoint.privateAddressReachable &&
+                    endpoint.privateAddress != endpoint.translatedAddress
+                ) {
+                    check(routes.put(endpoint.privateAddress, inbound) == null)
+                }
+            }
+            object : KQuicDatagramSocket {
+                override val localAddress: KQuicSocketAddress = endpoint.privateAddress
+
+                override suspend fun send(
+                    destination: KQuicSocketAddress,
+                    payload: ByteArray,
+                ) {
+                    val target = mutex.withLock { routes[destination] }
+                    if (target == null) {
+                        mutex.withLock {
+                            droppedPacketsToUnreachablePrivateAddress++
+                        }
+                        return
+                    }
+                    target.send(
+                        KQuicInboundDatagram(
+                            source = endpoint.translatedAddress,
+                            payload = payload.copyOf(),
+                        )
+                    )
+                }
+
+                override suspend fun receive(): KQuicInboundDatagram = inbound.receive()
+
+                override fun close() {
+                    inbound.close()
+                }
+            }
+        }
 }
