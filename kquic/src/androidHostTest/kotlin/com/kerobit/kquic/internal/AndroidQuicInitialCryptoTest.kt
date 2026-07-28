@@ -4,8 +4,8 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertFailsWith
 
-class JvmQuicInitialCryptoTest {
-    private val crypto = QuicInitialCrypto(JvmQuicCryptoPrimitives)
+class AndroidQuicInitialCryptoTest {
+    private val crypto = QuicInitialCrypto(AndroidQuicCryptoPrimitives)
     private val destinationConnectionId = "8394c8f03e515708".hex()
 
     @Test
@@ -49,7 +49,7 @@ class JvmQuicInitialCryptoTest {
 
     @Test
     fun retry_integrity_rejects_a_modified_packet() {
-        val integrity = QuicRetryIntegrity(JvmQuicCryptoPrimitives)
+        val integrity = QuicRetryIntegrity(AndroidQuicCryptoPrimitives)
         val originalDestinationId = byteArrayOf(1, 2, 3, 4)
         val retryWithoutTag = byteArrayOf(0xf0.toByte(), 0, 0, 0, 1, 0, 0, 9, 8, 7)
         val packet = retryWithoutTag + integrity.tag(originalDestinationId, retryWithoutTag)
@@ -63,7 +63,7 @@ class JvmQuicInitialCryptoTest {
 
     @Test
     fun complete_initial_and_short_packet_pipeline_roundTrips() {
-        val protection = QuicPacketProtection(JvmQuicCryptoPrimitives)
+        val protection = QuicPacketProtection(AndroidQuicCryptoPrimitives)
         val clientKeys = crypto.derive(destinationConnectionId, QuicInitialRole.CLIENT)
         val initialPlaintext = QuicFrames.encode(
             QuicFrame.Crypto(0uL, byteArrayOf(1, 2, 3, 4))
@@ -114,7 +114,7 @@ class JvmQuicInitialCryptoTest {
 
     @Test
     fun packet_pipeline_rejects_ciphertext_corruption() {
-        val protection = QuicPacketProtection(JvmQuicCryptoPrimitives)
+        val protection = QuicPacketProtection(AndroidQuicCryptoPrimitives)
         val keys = crypto.derive(destinationConnectionId, QuicInitialRole.CLIENT)
         val packet = protection.sealLong(
             type = QuicLongPacketType.HANDSHAKE,

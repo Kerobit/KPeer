@@ -27,22 +27,22 @@ class AppleKQuicDatagramSocketTest {
 
     @Test
     fun security_framework_completes_mutual_tls_key_agreement_and_signatures() = runBlocking {
-        val services = createKQuicPlatformServices(null)
+        val services = createKQuicPlatformRuntime()
         val client = CommonQuicTlsSession(
             QuicEndpointRole.CLIENT,
-            services.ephemeralIdentityProvider.identityFor(
+            services.crypto.ephemeralIdentityProvider.identityFor(
                 KQuicHandshakeRequest("apple", true)
             ),
             parameters(byteArrayOf(1)),
-            checkNotNull(services.handshakeCrypto)
+            services.crypto.handshakeCrypto
         )
         val server = CommonQuicTlsSession(
             QuicEndpointRole.SERVER,
-            services.ephemeralIdentityProvider.identityFor(
+            services.crypto.ephemeralIdentityProvider.identityFor(
                 KQuicHandshakeRequest("apple", false)
             ),
             parameters(byteArrayOf(2)),
-            checkNotNull(services.handshakeCrypto)
+            services.crypto.handshakeCrypto
         )
         val clientHello = client.start().single() as QuicTlsEvent.CryptoData
         val serverEvents = server.receive(QuicEncryptionLevel.INITIAL, clientHello.bytes)

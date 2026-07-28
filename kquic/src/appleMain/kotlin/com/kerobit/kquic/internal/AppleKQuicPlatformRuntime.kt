@@ -43,11 +43,28 @@ import platform.posix.CLOCK_MONOTONIC
 import platform.posix.clock_gettime
 import platform.posix.timespec
 
-internal actual fun createKQuicPlatformServices(platformContext: Any?): KQuicPlatformServices =
-    AppleKQuicPlatformServices
+internal actual fun createKQuicPlatformRuntime(): KQuicPlatformRuntime =
+    AppleKQuicPlatformRuntime
 
 @OptIn(ExperimentalForeignApi::class)
-private object AppleKQuicPlatformServices : KQuicPlatformServices {
+private object AppleKQuicPlatformRuntime : KQuicPlatformRuntime {
+    override val udp = AppleKQuicDatagramSocketFactory
+    override val network = KQuicNetworkRuntime(::appleHostAddresses)
+    override val clock = KQuicMonotonicClock {
+        memScoped {
+            val time = alloc<timespec>()
+            check(clock_gettime(CLOCK_MONOTONIC.toUInt(), time.ptr) == 0) {
+                "clock_gettime(CLOCK_MONOTONIC) failed"
+            }
+            time.tv_sec * 1_000_000_000L + time.tv_nsec
+        }
+    }
+    override val random = KQuicRandomRuntime(::appleSecureRandomBytes)
+    override val crypto = AppleKQuicCryptoRuntime
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private object AppleKQuicCryptoRuntime : KQuicCryptoRuntime {
     override val ephemeralIdentityProvider = KQuicIdentityProvider {
         val privateKey = appleCreateP256Key()
         val publicKey = checkNotNull(SecKeyCopyPublicKey(privateKey)) {
@@ -92,22 +109,8 @@ private object AppleKQuicPlatformServices : KQuicPlatformServices {
         )
     }
 
-    override val datagramSocketFactory: KQuicDatagramSocketFactory =
-        AppleKQuicDatagramSocketFactory
-    override val cryptoPrimitives: QuicCryptoPrimitives = AppleQuicCryptoPrimitives
+    override val packetProtection: QuicCryptoPrimitives = AppleQuicCryptoPrimitives
     override val handshakeCrypto: Tls13HandshakeCrypto = AppleTls13HandshakeCrypto
-    override val monotonicClock = KQuicMonotonicClock {
-        memScoped {
-            val time = alloc<timespec>()
-            check(clock_gettime(CLOCK_MONOTONIC.toUInt(), time.ptr) == 0) {
-                "clock_gettime(CLOCK_MONOTONIC) failed"
-            }
-            time.tv_sec * 1_000_000_000L + time.tv_nsec
-        }
-    }
-
-    override fun secureRandom(size: Int): ByteArray = appleSecureRandomBytes(size)
-    override fun hostAddresses(): List<String> = appleHostAddresses()
 
     override fun sha256(data: ByteArray): ByteArray = appleSha256(data)
 }

@@ -24,6 +24,7 @@ internal interface KQuicTransport {
     fun openChannel(config: KQuicChannelConfig)
     fun send(label: String, payload: ByteArray, text: Boolean): Boolean
     fun closeChannel(label: String)
+    suspend fun getStats(): KQuicTransportStats? = null
     fun close()
 }
 
@@ -40,10 +41,10 @@ internal sealed interface KQuicTransportEvent {
     data class IncomingChannel(val config: KQuicChannelConfig) : KQuicTransportEvent
     data class BytesReceived(val label: String, val payload: ByteArray) : KQuicTransportEvent
     data class TextReceived(val label: String, val text: String) : KQuicTransportEvent
+    data class BufferedAmountDrained(val label: String, val bytes: Int) : KQuicTransportEvent
     data class ChannelClosed(val label: String) : KQuicTransportEvent
     data class Disconnected(val reason: String?) : KQuicTransportEvent
     data class Failed(val error: KQuicError) : KQuicTransportEvent
-    data class StatsUpdated(val stats: KQuicTransportStats) : KQuicTransportEvent
 }
 
 internal data class KQuicTransportStats(

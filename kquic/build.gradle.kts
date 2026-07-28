@@ -21,7 +21,6 @@ val appleFrameworkName = "KerobitKQuic"
 kotlin {
     applyDefaultHierarchyTemplate()
 
-    jvm()
     android {
         namespace = "com.kerobit.kquic"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
@@ -38,9 +37,6 @@ kotlin {
     }
     val iosTargets = listOf(iosX64(), iosArm64(), iosSimulatorArm64())
     val macosArm64 = macosArm64()
-    linuxX64()
-    mingwX64()
-
     val xcf = XCFramework(appleFrameworkName)
 
     cocoapods {

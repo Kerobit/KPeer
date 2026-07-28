@@ -7,11 +7,11 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 
-class JvmKQuicDatagramSocketTest {
+class AndroidKQuicDatagramSocketTest {
     @Test
     fun bound_sockets_exchange_udp_datagrams_in_both_directions() = runBlocking {
-        val left = JvmKQuicDatagramSocketFactory.bind(KQuicSocketAddress("127.0.0.1", 0))
-        val right = JvmKQuicDatagramSocketFactory.bind(KQuicSocketAddress("127.0.0.1", 0))
+        val left = AndroidKQuicDatagramSocketFactory.bind(KQuicSocketAddress("127.0.0.1", 0))
+        val right = AndroidKQuicDatagramSocketFactory.bind(KQuicSocketAddress("127.0.0.1", 0))
         try {
             val receivedByRight = async { right.receive() }
             left.send(right.localAddress, byteArrayOf(1, 2, 3))

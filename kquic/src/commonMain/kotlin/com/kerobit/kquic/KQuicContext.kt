@@ -1,8 +1,8 @@
 package com.kerobit.kquic
 
 import com.kerobit.kquic.internal.CommonKQuicTransportFactory
-import com.kerobit.kquic.internal.KQuicPlatformServices
-import com.kerobit.kquic.internal.createKQuicPlatformServices
+import com.kerobit.kquic.internal.KQuicPlatformRuntime
+import com.kerobit.kquic.internal.createKQuicPlatformRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -11,37 +11,27 @@ import kotlinx.coroutines.cancel
 /** Resources used by a [KQuicPeer]. */
 class KQuicContext private constructor(
     val scope: CoroutineScope,
-    val platformContext: Any?,
     internal val transportFactory: KQuicTransportFactory,
-    internal val platformServices: KQuicPlatformServices,
+    internal val platformRuntime: KQuicPlatformRuntime,
     private val ownsScope: Boolean
 ) {
-    constructor(
-        scope: CoroutineScope? = null,
-        platformContext: Any? = null
-    ) : this(defaultResources(scope, platformContext), platformContext)
+    constructor(scope: CoroutineScope? = null) : this(defaultResources(scope))
 
     internal constructor(
         scope: CoroutineScope?,
-        platformContext: Any?,
         transportFactory: KQuicTransportFactory,
-        platformServices: KQuicPlatformServices = createKQuicPlatformServices(platformContext)
+        platformRuntime: KQuicPlatformRuntime = createKQuicPlatformRuntime()
     ) : this(
         scope = scope ?: createKQuicScope(),
-        platformContext = platformContext,
         transportFactory = transportFactory,
-        platformServices = platformServices,
+        platformRuntime = platformRuntime,
         ownsScope = scope == null
     )
 
-    private constructor(
-        resources: DefaultKQuicResources,
-        platformContext: Any?
-    ) : this(
+    private constructor(resources: DefaultKQuicResources) : this(
         scope = resources.scope,
-        platformContext = platformContext,
         transportFactory = resources.transportFactory,
-        platformServices = resources.platformServices,
+        platformRuntime = resources.platformRuntime,
         ownsScope = resources.ownsScope
     )
 
@@ -53,20 +43,17 @@ class KQuicContext private constructor(
 private data class DefaultKQuicResources(
     val scope: CoroutineScope,
     val transportFactory: KQuicTransportFactory,
-    val platformServices: KQuicPlatformServices,
+    val platformRuntime: KQuicPlatformRuntime,
     val ownsScope: Boolean
 )
 
-private fun defaultResources(
-    requestedScope: CoroutineScope?,
-    platformContext: Any?
-): DefaultKQuicResources {
+private fun defaultResources(requestedScope: CoroutineScope?): DefaultKQuicResources {
     val scope = requestedScope ?: createKQuicScope()
-    val services = createKQuicPlatformServices(platformContext)
+    val runtime = createKQuicPlatformRuntime()
     return DefaultKQuicResources(
         scope = scope,
-        transportFactory = CommonKQuicTransportFactory(scope, services),
-        platformServices = services,
+        transportFactory = CommonKQuicTransportFactory(scope, runtime),
+        platformRuntime = runtime,
         ownsScope = requestedScope == null
     )
 }

@@ -9,14 +9,30 @@ import java.security.SecureRandom
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
 import java.net.NetworkInterface
-import android.os.SystemClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-internal actual fun createKQuicPlatformServices(platformContext: Any?): KQuicPlatformServices =
-    AndroidKQuicPlatformServices
+internal actual fun createKQuicPlatformRuntime(): KQuicPlatformRuntime =
+    AndroidKQuicPlatformRuntime
 
-private object AndroidKQuicPlatformServices : KQuicPlatformServices {
+private object AndroidKQuicPlatformRuntime : KQuicPlatformRuntime {
+    override val udp = AndroidKQuicDatagramSocketFactory
+    override val network = KQuicNetworkRuntime {
+        NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+            .filter { runCatching { it.isUp && !it.isLoopback }.getOrDefault(false) }
+            .flatMap { it.inetAddresses.toList() }
+            .filter { !it.isLoopbackAddress && !it.isLinkLocalAddress }
+            .mapNotNull { it.hostAddress?.substringBefore('%') }
+            .distinct()
+    }
+    override val clock = KQuicMonotonicClock(System::nanoTime)
+    override val random = KQuicRandomRuntime { size ->
+        ByteArray(size).also(SecureRandom()::nextBytes)
+    }
+    override val crypto = AndroidKQuicCryptoRuntime
+}
+
+private object AndroidKQuicCryptoRuntime : KQuicCryptoRuntime {
     override val ephemeralIdentityProvider = KQuicIdentityProvider {
         withContext(Dispatchers.Default) {
             val random = SecureRandom()
@@ -41,22 +57,8 @@ private object AndroidKQuicPlatformServices : KQuicPlatformServices {
         }
     }
 
-    override val datagramSocketFactory: KQuicDatagramSocketFactory =
-        AndroidKQuicDatagramSocketFactory
-    override val cryptoPrimitives: QuicCryptoPrimitives = AndroidQuicCryptoPrimitives
+    override val packetProtection: QuicCryptoPrimitives = AndroidQuicCryptoPrimitives
     override val handshakeCrypto: Tls13HandshakeCrypto = AndroidTls13HandshakeCrypto
-    override val monotonicClock = KQuicMonotonicClock(SystemClock::elapsedRealtimeNanos)
-
-    override fun secureRandom(size: Int): ByteArray =
-        ByteArray(size).also(SecureRandom()::nextBytes)
-
-    override fun hostAddresses(): List<String> =
-        NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
-            .filter { runCatching { it.isUp && !it.isLoopback }.getOrDefault(false) }
-            .flatMap { it.inetAddresses.toList() }
-            .filter { !it.isLoopbackAddress && !it.isLinkLocalAddress }
-            .mapNotNull { it.hostAddress?.substringBefore('%') }
-            .distinct()
 
     override fun sha256(data: ByteArray): ByteArray =
         MessageDigest.getInstance("SHA-256").digest(data)

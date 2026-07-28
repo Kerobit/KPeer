@@ -21,7 +21,6 @@ class KQuicPeerTest {
         val peer = KQuicPeer(
             KQuicContext(
                 scope = this,
-                platformContext = null,
                 transportFactory = KQuicTransportFactory { PendingTransport }
             ),
             KQuicConfig(
@@ -51,7 +50,6 @@ class KQuicPeerTest {
         val peer = KQuicPeer(
             KQuicContext(
                 scope = this,
-                platformContext = null,
                 transportFactory = KQuicTransportFactory { PendingTransport }
             ),
             KQuicConfig(

@@ -17,26 +17,23 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.concurrent.atomics.AtomicInt
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlinx.coroutines.selects.select
 
 /**
  * Serial QUIC v1 connection actor. UDP jobs only enqueue commands; all protocol state is owned by
  * [runActor], which prevents packet numbers, recovery, TLS and stream state from racing.
  */
-@OptIn(ExperimentalAtomicApi::class)
 internal class CommonQuicConnectionActor(
     parentScope: CoroutineScope,
-    private val socket: KQuicDatagramSocket,
+    socket: KQuicDatagramSocket,
     private val remoteAddress: KQuicSocketAddress,
     private val role: KQuicTransportRole,
     private val identity: KQuicIdentity,
     private val config: KQuicConfig,
-    private val platformServices: KQuicPlatformServices,
+    private val platformRuntime: KQuicPlatformRuntime,
     private val emitEvent: suspend (KQuicTransportEvent) -> Unit,
+    private val emitBufferedAmountDrained: (String, Int) -> Unit = { _, _ -> },
     private val logger: KQuicLogger = NoOpKQuicLogger
 ) {
     private sealed interface Command {
@@ -49,35 +46,13 @@ internal class CommonQuicConnectionActor(
             val reservedBytes: Int
         ) : Command
         data class CloseChannel(val label: String) : Command
+        data class GetStats(
+            val reply: CompletableDeferred<KQuicTransportStats>
+        ) : Command
         data class Fatal(val error: Throwable) : Command
         data object Tick : Command
         data object Close : Command
     }
-
-    private data class ProtectionPair(
-        val read: QuicPacketProtectionKeys,
-        val write: QuicPacketProtectionKeys
-    )
-
-    private data class QueuedFrame(
-        val frame: QuicFrame,
-        val estimatedBytes: Int
-    )
-
-    private class ChannelBinding(
-        val id: ULong,
-        val label: String,
-        val delivery: KQuicDelivery,
-        var streamId: ULong
-    )
-
-    private data class PendingStreamWrite(
-        val binding: ChannelBinding,
-        val bytes: ByteArray,
-        val fin: Boolean,
-        val reservedBytes: Int,
-        var position: Int = 0
-    )
 
     private val scopeJob = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(parentScope.coroutineContext + scopeJob)
@@ -85,8 +60,8 @@ internal class CommonQuicConnectionActor(
         capacity = config.limits.maxBufferedPackets.coerceIn(16, 1_024)
     )
     private val connected = CompletableDeferred<KQuicRemoteIdentity>()
-    private val crypto = requireNotNull(platformServices.cryptoPrimitives)
-    private val handshakeCrypto = requireNotNull(platformServices.handshakeCrypto)
+    private val crypto = platformRuntime.crypto.packetProtection
+    private val handshakeCrypto = platformRuntime.crypto.handshakeCrypto
     private val packetProtection = QuicPacketProtection(crypto)
     private val keySchedule = Tls13KeySchedule(handshakeCrypto.primitives)
     private val endpointRole = if (role == KQuicTransportRole.CLIENT) {
@@ -94,89 +69,60 @@ internal class CommonQuicConnectionActor(
     } else {
         QuicEndpointRole.SERVER
     }
-    private val localConnectionId = platformServices.secureRandom(CONNECTION_ID_LENGTH)
+    private val localConnectionId = platformRuntime.random.bytes(CONNECTION_ID_LENGTH)
     private var originalDestinationConnectionId: ByteArray? =
         if (endpointRole == QuicEndpointRole.CLIENT) {
-            platformServices.secureRandom(CONNECTION_ID_LENGTH)
+            platformRuntime.random.bytes(CONNECTION_ID_LENGTH)
         } else {
             null
         }
     private var remoteConnectionId: ByteArray? = null
-    private var tls: CommonQuicTlsSession? = null
-    private var remoteIdentity: KQuicRemoteIdentity? = null
-    private var remoteParameters: QuicTransportParameterValues? = null
-    private var tlsComplete = false
+    private val handshake = QuicHandshake(
+        endpointRole = endpointRole,
+        identity = identity,
+        config = config,
+        handshakeCrypto = handshakeCrypto,
+        localConnectionId = localConnectionId
+    )
     private var handshakeConfirmed = false
-    private var started = false
-    private var closing = false
-    private var lastActivityMs = nowMs()
-    private var lastStatsAtMs = 0L
-    private var lastNetworkCheckAtMs = lastActivityMs
-    private val initialHostAddresses = platformServices.hostAddresses().sorted()
+    private val core = QuicConnectionCore(
+        startedAtMs = nowMs(),
+        idleTimeoutMs = config.idleTimeoutMs,
+        networkCheckIntervalMs = NETWORK_CHECK_INTERVAL_MS
+    )
+    private val closing: Boolean get() = core.closing
+    private val ioDriver = QuicIoDriver(
+        scope = scope,
+        socket = socket,
+        tickIntervalMs = TICK_INTERVAL_MS,
+        isClosing = { core.closing },
+        onInbound = { commands.send(Command.Inbound(it)) },
+        onTick = { commands.send(Command.Tick) },
+        onFailure = { commands.trySend(Command.Fatal(it)) }
+    )
+    private val initialHostAddresses = platformRuntime.network.hostAddresses().sorted()
 
-    private val protectionByLevel = mutableMapOf<QuicEncryptionLevel, ProtectionPair>()
-    private val nextPacketNumber = QuicPacketNumberSpace.entries
-        .associateWith { 0uL }
-        .toMutableMap()
-    private val largestReceived = QuicPacketNumberSpace.entries
-        .associateWith<QuicPacketNumberSpace, ULong?> { null }
-        .toMutableMap()
-    private val ackTrackers = QuicPacketNumberSpace.entries
-        .associateWith { QuicAckTracker() }
-    private val recovery = QuicRecoverySpaces()
-    private val frameQueues = QuicEncryptionLevel.entries
-        .associateWith { ArrayDeque<QueuedFrame>() }
-    private val cryptoReceive = mapOf(
-        QuicEncryptionLevel.INITIAL to QuicOffsetReassembler(
-            config.limits.maxBufferedCryptoBytes,
-            config.limits.maxBufferedCryptoBytes.toULong()
-        ),
-        QuicEncryptionLevel.HANDSHAKE to QuicOffsetReassembler(
-            config.limits.maxBufferedCryptoBytes,
-            config.limits.maxBufferedCryptoBytes.toULong()
-        )
-    )
-    private val cryptoSendOffset = mutableMapOf(
-        QuicEncryptionLevel.INITIAL to 0uL,
-        QuicEncryptionLevel.HANDSHAKE to 0uL
-    )
+    private val packetSpaces = QuicPacketSpaces()
     private var queuedFrameBytes = 0
-    private val pendingApplicationBytes = AtomicInt(0)
-
-    private val streamManager = QuicStreamManager(
-        role = endpointRole,
-        localMaxBidirectionalStreams = config.limits.maxBidirectionalStreams.toULong(),
-        localMaxUnidirectionalStreams = config.limits.maxUnidirectionalStreams.toULong(),
-        localMaxStreamData = config.limits.maxStreamData.toULong(),
-        maximumBufferedBytesPerStream = config.limits.maxBufferedStreamBytes
+    private val channelManager = QuicChannelManager(
+        endpointRole = endpointRole,
+        config = config,
+        queuedFrameBytes = { queuedFrameBytes },
+        enqueue = { frame, required ->
+            enqueue(QuicEncryptionLevel.ONE_RTT, frame, required)
+        },
+        bufferedAmountDrained = emitBufferedAmountDrained,
+        emitEvent = emitEvent
     )
-    private val streamSenders = mutableMapOf<ULong, QuicStreamSender>()
-    private val streamDecoders = mutableMapOf<ULong, QuicChannelFrameDecoder>()
-    private val pendingStreamWrites = mutableListOf<PendingStreamWrite>()
-    private val streamDataConsumed = mutableMapOf<ULong, ULong>()
-    private val channelsById = mutableMapOf<ULong, ChannelBinding>()
-    private val channelsByLabel = mutableMapOf<String, ChannelBinding>()
-    private var nextChannelId = if (endpointRole == QuicEndpointRole.CLIENT) 0uL else 1uL
-    private var localControlStreamId: ULong? = null
-    private var peerMaxConnectionData = 0uL
-    private var peerConnectionDataSent = 0uL
-    private var localConnectionDataConsumed = 0uL
-
-    private var bytesSent = 0L
-    private var bytesReceived = 0L
-    private var packetsSent = 0L
-    private var packetsReceived = 0L
-    private var datagramsDropped = 0L
-    private var streamsBlocked = 0L
 
     suspend fun connect(): KQuicRemoteIdentity {
-        if (!started) start()
+        if (!core.started) start()
         return connected.await()
     }
 
     fun openChannel(config: KQuicChannelConfig): Boolean {
         if (config.delivery == KQuicDelivery.UNRELIABLE &&
-            remoteParameters?.maxDatagramFrameSize == null
+            handshake.remoteParameters?.maxDatagramFrameSize == null
         ) {
             throw KQuicError.UnsupportedDelivery(
                 "The remote peer did not negotiate QUIC DATAGRAM"
@@ -186,17 +132,11 @@ internal class CommonQuicConnectionActor(
     }
 
     fun send(label: String, payload: ByteArray, text: Boolean): Boolean {
-        if (payload.size > config.limits.maxMessageSize) return false
-        val reservation = payload.size + APPLICATION_MESSAGE_OVERHEAD
-        while (true) {
-            val current = pendingApplicationBytes.load()
-            if (current + reservation > config.limits.maxSendQueueBytes) return false
-            if (pendingApplicationBytes.compareAndSet(current, current + reservation)) break
-        }
+        val reservation = channelManager.reserve(payload.size) ?: return false
         return commands.trySend(
             Command.Send(label, payload.copyOf(), text, reservation)
         ).isSuccess.also { accepted ->
-            if (!accepted) pendingApplicationBytes.fetchAndAdd(-reservation)
+            if (!accepted) channelManager.release(reservation)
         }
     }
 
@@ -204,37 +144,31 @@ internal class CommonQuicConnectionActor(
         commands.trySend(Command.CloseChannel(label))
     }
 
+    suspend fun getStats(): KQuicTransportStats {
+        if (closing) return currentStats()
+        val reply = CompletableDeferred<KQuicTransportStats>()
+        if (commands.trySend(Command.GetStats(reply)).isFailure) return currentStats()
+        return select {
+            reply.onAwait { it }
+            scopeJob.onJoin { currentStats() }
+        }
+    }
+
     fun close() {
         if (commands.trySend(Command.Close).isFailure) {
-            socket.close()
+            ioDriver.close()
             scopeJob.cancel()
         }
     }
 
     private fun start() {
-        started = true
+        if (!core.start()) return
         logger.info(
             "Starting QUIC handshake role=$role idleTimeoutMs=${config.idleTimeoutMs}"
         )
         logger.debug("QUIC remote endpoint=$remoteAddress")
         scope.launch { runActor() }
-        scope.launch {
-            try {
-                while (isActive && !closing) {
-                    commands.send(Command.Inbound(socket.receive()))
-                }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                if (!closing) commands.trySend(Command.Fatal(error))
-            }
-        }
-        scope.launch {
-            while (isActive && !closing) {
-                delay(TICK_INTERVAL_MS)
-                commands.send(Command.Tick)
-            }
-        }
+        ioDriver.start()
         if (endpointRole == QuicEndpointRole.CLIENT) {
             commands.trySend(Command.Tick)
         }
@@ -249,6 +183,7 @@ internal class CommonQuicConnectionActor(
                     is Command.OpenChannel -> handleOpenChannel(command.config)
                     is Command.Send -> handleSend(command)
                     is Command.CloseChannel -> handleCloseChannel(command.label)
+                    is Command.GetStats -> command.reply.complete(currentStats())
                     is Command.Fatal -> throw command.error
                     Command.Tick -> handleTick()
                     Command.Close -> {
@@ -266,22 +201,22 @@ internal class CommonQuicConnectionActor(
                 ?: KQuicError.TransportFailure(error.message ?: "QUIC actor failed")
             logger.error(
                 "QUIC actor failed reason=${mapped.message.orEmpty()} " +
-                    "packetsSent=$packetsSent packetsReceived=$packetsReceived " +
-                    "bytesSent=$bytesSent bytesReceived=$bytesReceived"
+                    "packetsSent=${core.stats().packetsSent} " +
+                    "packetsReceived=${core.stats().packetsReceived} " +
+                    "bytesSent=${core.stats().bytesSent} bytesReceived=${core.stats().bytesReceived}"
             )
             if (!connected.isCompleted) connected.completeExceptionally(mapped)
             emitEvent(KQuicTransportEvent.Failed(mapped))
         } finally {
-            closing = true
-            tls?.close()
-            protectionByLevel.values.forEach { pair ->
+            core.close("actor_terminated")
+            handshake.close()
+            packetSpaces.values.mapNotNull { it.protection }.forEach { pair ->
                 pair.read.clear()
                 pair.write.clear()
             }
-            protectionByLevel.clear()
-            pendingApplicationBytes.store(0)
-            identity.release()
-            socket.close()
+            packetSpaces.values.forEach { it.protection = null }
+            channelManager.reset()
+            ioDriver.close()
             commands.close()
             scopeJob.cancel()
         }
@@ -290,8 +225,8 @@ internal class CommonQuicConnectionActor(
     private suspend fun initializeClient() {
         val destinationId = checkNotNull(originalDestinationConnectionId)
         installInitialKeys(destinationId)
-        initializeTls()
-        handleTlsEvents(checkNotNull(tls).start())
+        handshake.initialize(originalDestinationConnectionId)
+        handleTlsEvents(handshake.start())
         flush()
     }
 
@@ -299,42 +234,20 @@ internal class CommonQuicConnectionActor(
         originalDestinationConnectionId = invariant.destinationConnectionId
         remoteConnectionId = invariant.sourceConnectionId
         installInitialKeys(invariant.destinationConnectionId)
-        initializeTls()
-    }
-
-    private fun initializeTls() {
-        val parameters = QuicTransportParameterValues(
-            originalDestinationConnectionId =
-                if (endpointRole == QuicEndpointRole.SERVER) {
-                    originalDestinationConnectionId
-                } else {
-                    null
-                },
-            maxIdleTimeoutMs = config.idleTimeoutMs.toULong(),
-            maxUdpPayloadSize = MAX_UDP_DATAGRAM_SIZE.toULong(),
-            initialMaxData = config.limits.maxConnectionData.toULong(),
-            initialMaxStreamDataBidiLocal = config.limits.maxStreamData.toULong(),
-            initialMaxStreamDataBidiRemote = config.limits.maxStreamData.toULong(),
-            initialMaxStreamDataUni = config.limits.maxStreamData.toULong(),
-            initialMaxStreamsBidi = config.limits.maxBidirectionalStreams.toULong(),
-            initialMaxStreamsUni = config.limits.maxUnidirectionalStreams.toULong(),
-            initialSourceConnectionId = localConnectionId,
-            maxDatagramFrameSize = MAX_FRAME_PAYLOAD.toULong()
-        )
-        tls = CommonQuicTlsSession(endpointRole, identity, parameters, handshakeCrypto)
+        handshake.initialize(originalDestinationConnectionId)
     }
 
     private fun installInitialKeys(destinationId: ByteArray) {
         val initial = QuicInitialCrypto(crypto)
-        protectionByLevel[QuicEncryptionLevel.INITIAL] = if (
+        packetSpaces[QuicEncryptionLevel.INITIAL].protection = if (
             endpointRole == QuicEndpointRole.CLIENT
         ) {
-            ProtectionPair(
+            QuicProtectionPair(
                 read = initial.derive(destinationId, QuicInitialRole.SERVER),
                 write = initial.derive(destinationId, QuicInitialRole.CLIENT)
             )
         } else {
-            ProtectionPair(
+            QuicProtectionPair(
                 read = initial.derive(destinationId, QuicInitialRole.CLIENT),
                 write = initial.derive(destinationId, QuicInitialRole.SERVER)
             )
@@ -344,15 +257,13 @@ internal class CommonQuicConnectionActor(
     private suspend fun handleInbound(datagram: KQuicInboundDatagram) {
         if (closing || StunProtocol.isStun(datagram.payload)) return
         if (datagram.source != remoteAddress) return
-        lastActivityMs = nowMs()
-        bytesReceived += datagram.payload.size
-        packetsReceived++
+        if (core.receive(datagram, nowMs()).isEmpty()) return
 
         val invariant = QuicInvariantHeaders.decode(
             datagram.payload,
             shortHeaderDestinationIdLength = localConnectionId.size
         )
-        if (endpointRole == QuicEndpointRole.SERVER && tls == null) {
+        if (endpointRole == QuicEndpointRole.SERVER && !handshake.initialized) {
             logger.debug("Received first QUIC Initial datagram from ${datagram.source}")
             val long = invariant as? QuicInvariantHeader.Long
                 ?: throw KQuicError.ProtocolViolation("First QUIC packet must use a long header")
@@ -373,33 +284,36 @@ internal class CommonQuicConnectionActor(
             }
             is QuicInvariantHeader.Short -> QuicEncryptionLevel.ONE_RTT
         }
-        val keys = protectionByLevel[level]?.read ?: return
-        val space = level.packetNumberSpace
+        val packetSpace = packetSpaces[level]
+        val keys = packetSpace.protection?.read ?: return
         val opened = when (invariant) {
             is QuicInvariantHeader.Long -> packetProtection.openLong(
                 datagram.payload,
-                largestReceived[space],
+                packetSpace.largestReceived,
                 keys
             )
             is QuicInvariantHeader.Short -> packetProtection.openShort(
                 datagram.payload,
                 localConnectionId.size,
-                largestReceived[space],
+                packetSpace.largestReceived,
                 keys
             )
         }
         val frames = QuicFrames.decodeAll(opened.plaintext)
         val ackEliciting = frames.any { it.isAckEliciting() }
         val now = nowMs()
-        val isNew = checkNotNull(ackTrackers[space]).onPacketReceived(
+        val isNew = packetSpace.ackTracker.onPacketReceived(
             opened.packetNumber,
             now,
             ackEliciting
         )
         if (!isNew) return
-        largestReceived[space] = maxOf(largestReceived[space] ?: 0uL, opened.packetNumber)
+        packetSpace.largestReceived = maxOf(
+            packetSpace.largestReceived ?: 0uL,
+            opened.packetNumber
+        )
         frames.forEach { processFrame(level, it) }
-        val tracker = checkNotNull(ackTrackers[space])
+        val tracker = packetSpace.ackTracker
         if (tracker.shouldAcknowledge()) {
             tracker.frame(now, LOCAL_ACK_DELAY_EXPONENT)?.let {
                 enqueue(level, it, required = true)
@@ -411,109 +325,90 @@ internal class CommonQuicConnectionActor(
         when (frame) {
             is QuicFrame.Ack -> processAck(level, frame)
             is QuicFrame.Crypto -> {
-                val reassembler = cryptoReceive[level]
-                    ?: throw KQuicError.ProtocolViolation("CRYPTO at invalid level")
-                val contiguous = reassembler.add(frame.offset, frame.data)
-                if (contiguous.isNotEmpty()) {
-                    handleTlsEvents(checkNotNull(tls).receive(level, contiguous))
-                }
+                handleTlsEvents(handshake.receive(level, frame))
             }
-            is QuicFrame.Stream -> processStream(frame)
-            is QuicFrame.Datagram -> processDatagram(frame)
+            is QuicFrame.Stream -> channelManager.processStream(frame)
+            is QuicFrame.Datagram -> channelManager.processDatagram(frame)
             is QuicFrame.MaxStreams ->
-                streamManager.updatePeerMaxStreams(frame.bidirectional, frame.maximumStreams)
+                channelManager.updatePeerMaxStreams(frame.bidirectional, frame.maximumStreams)
             is QuicFrame.MaxStreamData ->
-                streamSenders[frame.streamId]?.let {
-                    it.updateMaximumData(frame.maximumStreamData)
-                    drainStreamWrites()
-                }
-            is QuicFrame.MaxData -> {
-                peerMaxConnectionData = maxOf(peerMaxConnectionData, frame.maximumData)
-                drainStreamWrites()
-            }
-            is QuicFrame.ResetStream -> {
-                streamManager.reset(frame)
-                channelsByLabel.values
-                    .firstOrNull { it.streamId == frame.streamId }
-                    ?.let { emitEvent(KQuicTransportEvent.ChannelClosed(it.label)) }
-            }
-            is QuicFrame.StopSending -> {
-                channelsByLabel.values
-                    .firstOrNull { it.streamId == frame.streamId }
-                    ?.let { emitEvent(KQuicTransportEvent.ChannelClosed(it.label)) }
-            }
+                channelManager.updatePeerMaxStreamData(frame.streamId, frame.maximumStreamData)
+            is QuicFrame.MaxData -> channelManager.updatePeerMaxData(frame.maximumData)
+            is QuicFrame.ResetStream -> channelManager.streamReset(frame.streamId)
+            is QuicFrame.StopSending -> channelManager.streamReset(frame.streamId)
             is QuicFrame.ConnectionClose -> {
                 emitEvent(KQuicTransportEvent.Disconnected(frame.reason))
-                closing = true
+                core.close(frame.reason)
                 scopeJob.cancel()
             }
             QuicFrame.HandshakeDone -> {
-                if (endpointRole != QuicEndpointRole.CLIENT || !tlsComplete) {
+                if (endpointRole != QuicEndpointRole.CLIENT || !handshake.complete) {
                     throw KQuicError.ProtocolViolation("Unexpected HANDSHAKE_DONE")
                 }
                 handshakeConfirmed = true
                 completeConnection()
                 discardKeys(QuicEncryptionLevel.INITIAL)
                 discardKeys(QuicEncryptionLevel.HANDSHAKE)
-                recovery.discard(QuicPacketNumberSpace.INITIAL)
-                recovery.discard(QuicPacketNumberSpace.HANDSHAKE)
+                packetSpaces[QuicPacketNumberSpace.INITIAL].discardRecovery()
+                packetSpaces[QuicPacketNumberSpace.HANDSHAKE].discardRecovery()
             }
             is QuicFrame.NewConnectionId,
             is QuicFrame.RetireConnectionId -> Unit
-            is QuicFrame.DataBlocked -> enqueue(
-                QuicEncryptionLevel.ONE_RTT,
-                QuicFrame.MaxData(
-                    config.limits.maxConnectionData.toULong() + localConnectionDataConsumed
-                ),
-                required = false
-            )
-            is QuicFrame.StreamDataBlocked -> enqueue(
-                QuicEncryptionLevel.ONE_RTT,
-                QuicFrame.MaxStreamData(
-                    frame.streamId,
-                    config.limits.maxStreamData.toULong() + localConnectionDataConsumed
-                ),
-                required = false
-            )
-            is QuicFrame.StreamsBlocked -> streamsBlocked++
+            is QuicFrame.DataBlocked -> channelManager.peerBlockedOnConnection()
+            is QuicFrame.StreamDataBlocked -> channelManager.peerBlockedOnStream(frame.streamId)
+            is QuicFrame.StreamsBlocked -> channelManager.peerBlockedOnStreams()
             QuicFrame.Ping -> Unit
         }
     }
 
     private fun processAck(level: QuicEncryptionLevel, frame: QuicFrame.Ack) {
-        val space = level.packetNumberSpace
-        val exponent = remoteParameters?.ackDelayExponent?.toInt() ?: LOCAL_ACK_DELAY_EXPONENT
+        val exponent =
+            handshake.remoteParameters?.ackDelayExponent?.toInt()
+                ?: LOCAL_ACK_DELAY_EXPONENT
         val delayMs = ((frame.ackDelay shl exponent) / 1_000uL).toLong()
-        val result = recovery[space].onAckReceivedDetailed(frame.ranges, nowMs(), delayMs)
+        val result = packetSpaces[level].recovery.onAckReceivedDetailed(
+            frame.ranges,
+            nowMs(),
+            delayMs
+        )
         result.framesToRetransmit.forEach {
             enqueue(level, it, required = false)
         }
-        drainStreamWrites()
+        channelManager.drain()
     }
 
     private suspend fun handleTlsEvents(events: List<QuicTlsEvent>) {
         events.forEach { event ->
             when (event) {
-                is QuicTlsEvent.CryptoData -> enqueueCrypto(event.level, event.bytes)
+                is QuicTlsEvent.CryptoData -> {
+                    handshake.outboundCryptoFrames(
+                        event.level,
+                        event.bytes,
+                        MAX_FRAME_PAYLOAD
+                    ).forEach {
+                        enqueue(event.level, it, required = true)
+                    }
+                }
                 is QuicTlsEvent.SecretsAvailable -> {
-                    protectionByLevel[event.level] = ProtectionPair(
+                    packetSpaces[event.level].protection = QuicProtectionPair(
                         read = keySchedule.quicPacketProtectionKeys(event.secrets.read),
                         write = keySchedule.quicPacketProtectionKeys(event.secrets.write)
                     )
                 }
                 is QuicTlsEvent.RemoteIdentityAvailable -> {
-                    remoteIdentity = event.identity
+                    handshake.record(event)
                     logger.debug(
                         "TLS remote identity available fingerprint=" +
                             "${event.identity.publicKeySha256.take(8)}…"
                     )
                 }
                 is QuicTlsEvent.TransportParametersAvailable -> {
+                    handshake.record(event)
                     applyRemoteParameters(event.parameters)
                     logger.debug("QUIC remote transport parameters accepted")
                 }
                 QuicTlsEvent.HandshakeComplete -> {
-                    tlsComplete = true
+                    handshake.record(event)
                     logger.info("TLS 1.3 handshake complete role=$role")
                     if (endpointRole == QuicEndpointRole.SERVER) {
                         enqueue(QuicEncryptionLevel.ONE_RTT, QuicFrame.HandshakeDone, true)
@@ -542,322 +437,69 @@ internal class CommonQuicConnectionActor(
                 )
             }
         }
-        remoteParameters = parameters
-        peerMaxConnectionData = parameters.initialMaxData
-        streamManager.updatePeerMaxStreams(true, parameters.initialMaxStreamsBidi)
-        streamManager.updatePeerMaxStreams(false, parameters.initialMaxStreamsUni)
-    }
-
-    private fun enqueueCrypto(level: QuicEncryptionLevel, bytes: ByteArray) {
-        var position = 0
-        var offset = checkNotNull(cryptoSendOffset[level])
-        while (position < bytes.size) {
-            val end = minOf(position + MAX_FRAME_PAYLOAD, bytes.size)
-            val chunk = bytes.copyOfRange(position, end)
-            enqueue(level, QuicFrame.Crypto(offset, chunk), required = true)
-            offset += chunk.size.toULong()
-            position = end
-        }
-        cryptoSendOffset[level] = offset
+        channelManager.applyRemoteParameters(parameters)
     }
 
     private suspend fun handleOpenChannel(channelConfig: KQuicChannelConfig) {
         ensureApplicationReady()
-        channelsByLabel[channelConfig.label]?.let { existing ->
-            if (existing.delivery != channelConfig.delivery) {
-                throw KQuicError.InvalidChannel(
-                    "Channel ${channelConfig.label} already uses ${existing.delivery}"
-                )
-            }
-            return
-        }
-        if (channelConfig.delivery == KQuicDelivery.UNRELIABLE &&
-            remoteParameters?.maxDatagramFrameSize == null
-        ) {
-            throw KQuicError.UnsupportedDelivery(
-                "The remote peer did not negotiate QUIC DATAGRAM"
-            )
-        }
-        val streamId = if (channelConfig.delivery == KQuicDelivery.UNRELIABLE) {
-            localControlStreamId ?: streamManager.openBidirectional().also {
-                localControlStreamId = it
-            }
-        } else {
-            streamManager.openBidirectional()
-        }
-        val binding = ChannelBinding(
-            id = nextChannelId.also { nextChannelId += 2uL },
-            label = channelConfig.label,
-            delivery = channelConfig.delivery,
-            streamId = streamId
-        )
-        channelsById[binding.id] = binding
-        channelsByLabel[binding.label] = binding
-        queueStreamMessage(
-            binding,
-            QuicChannelMessage.Open(binding.id, binding.label, binding.delivery)
-        )
+        channelManager.open(channelConfig)
     }
 
     private fun handleSend(command: Command.Send) {
         ensureApplicationReady()
-        val binding = channelsByLabel[command.label]
-            ?: throw KQuicError.InvalidChannel("Unknown channel ${command.label}")
-        val message = if (command.text) {
-            QuicChannelMessage.Text(binding.id, command.payload.decodeToString())
-        } else {
-            QuicChannelMessage.Bytes(binding.id, command.payload)
-        }
-        if (binding.delivery == KQuicDelivery.RELIABLE_ORDERED) {
-            queueStreamMessage(binding, message, reservedBytes = command.reservedBytes)
-        } else {
-            val encoded = QuicChannelFrames.encode(message, config.limits)
-            val remoteMaximum = remoteParameters?.maxDatagramFrameSize?.toInt()
-                ?: throw KQuicError.UnsupportedDelivery("QUIC DATAGRAM is unavailable")
-            if (encoded.size > minOf(remoteMaximum, MAX_FRAME_PAYLOAD)) {
-                datagramsDropped++
-                pendingApplicationBytes.fetchAndAdd(-command.reservedBytes)
-                return
-            }
-            if (!enqueue(
-                    QuicEncryptionLevel.ONE_RTT,
-                    QuicFrame.Datagram(encoded),
-                    required = false
-                )
-            ) {
-                datagramsDropped++
-            }
-            pendingApplicationBytes.fetchAndAdd(-command.reservedBytes)
-        }
+        channelManager.send(
+            command.label,
+            command.payload,
+            command.text,
+            command.reservedBytes
+        )
     }
 
     private fun handleCloseChannel(label: String) {
-        val binding = channelsByLabel.remove(label) ?: return
-        channelsById.remove(binding.id)
-        queueStreamMessage(
-            binding,
-            QuicChannelMessage.Close(binding.id),
-            fin = binding.delivery == KQuicDelivery.RELIABLE_ORDERED
-        )
-    }
-
-    private fun queueStreamMessage(
-        binding: ChannelBinding,
-        message: QuicChannelMessage,
-        fin: Boolean = false,
-        reservedBytes: Int = 0
-    ) {
-        val encoded = QuicChannelFrames.encode(message, config.limits)
-        pendingStreamWrites += PendingStreamWrite(binding, encoded, fin, reservedBytes)
-        drainStreamWrites()
-    }
-
-    private fun drainStreamWrites() {
-        var index = 0
-        while (index < pendingStreamWrites.size) {
-            val pending = pendingStreamWrites[index]
-            if (pendingStreamWrites.take(index).any {
-                    it.binding.streamId == pending.binding.streamId
-                }
-            ) {
-                index++
-                continue
-            }
-            val sender = streamSenders.getOrPut(pending.binding.streamId) {
-                QuicStreamSender(
-                    pending.binding.streamId,
-                    initialPeerStreamCredit(pending.binding.streamId)
-                )
-            }
-            val remaining = pending.bytes.size - pending.position
-            val connectionCredit = peerMaxConnectionData - peerConnectionDataSent
-            val available = minOf(
-                minOf(remaining.toULong(), sender.availableData),
-                minOf(connectionCredit, MAX_FRAME_PAYLOAD.toULong())
-            ).toInt()
-            val emptyFin = remaining == 0 && pending.fin
-            if (available == 0 && !emptyFin) {
-                streamsBlocked++
-                if (connectionCredit == 0uL) {
-                    enqueue(
-                        QuicEncryptionLevel.ONE_RTT,
-                        QuicFrame.DataBlocked(peerMaxConnectionData),
-                        required = false
-                    )
-                }
-                if (sender.availableData == 0uL) {
-                    enqueue(
-                        QuicEncryptionLevel.ONE_RTT,
-                        QuicFrame.StreamDataBlocked(
-                            pending.binding.streamId,
-                            sender.maximumDataLimit
-                        ),
-                        required = false
-                    )
-                }
-                index++
-                continue
-            }
-            if (queuedFrameBytes + available + PACKET_OVERHEAD * 2 >
-                config.limits.maxSendQueueBytes
-            ) {
-                return
-            }
-            val end = pending.position + available
-            val chunk = pending.bytes.copyOfRange(pending.position, end)
-            val final = pending.fin && end == pending.bytes.size
-            val frame = sender.frame(chunk, final)
-            check(enqueue(QuicEncryptionLevel.ONE_RTT, frame, required = true))
-            peerConnectionDataSent += chunk.size.toULong()
-            pending.position = end
-            if (pending.position == pending.bytes.size) {
-                pendingStreamWrites.removeAt(index)
-                if (pending.reservedBytes > 0) {
-                    pendingApplicationBytes.fetchAndAdd(-pending.reservedBytes)
-                }
-            } else {
-                index++
-            }
-        }
-    }
-
-    private suspend fun processStream(frame: QuicFrame.Stream) {
-        val received = streamManager.receive(frame)
-        if (received.bytes.isEmpty()) return
-        localConnectionDataConsumed += received.bytes.size.toULong()
-        val consumedOnStream = checkNotNull(
-            streamDataConsumed[frame.streamId] ?: 0uL
-        ) + received.bytes.size.toULong()
-        streamDataConsumed[frame.streamId] = consumedOnStream
-        val decoder = streamDecoders.getOrPut(frame.streamId) {
-            QuicChannelFrameDecoder(config.limits)
-        }
-        decoder.feed(received.bytes).forEach { processChannelMessage(frame.streamId, it) }
-        enqueue(
-            QuicEncryptionLevel.ONE_RTT,
-            QuicFrame.MaxData(
-                config.limits.maxConnectionData.toULong() + localConnectionDataConsumed
-            ),
-            required = false
-        )
-        enqueue(
-            QuicEncryptionLevel.ONE_RTT,
-            QuicFrame.MaxStreamData(
-                frame.streamId,
-                config.limits.maxStreamData.toULong() + consumedOnStream
-            ),
-            required = false
-        )
-        streamManager.updateLocalStreamLimit(
-            frame.streamId,
-            config.limits.maxStreamData.toULong() + consumedOnStream
-        )
-    }
-
-    private suspend fun processDatagram(frame: QuicFrame.Datagram) {
-        val messages = QuicChannelFrameDecoder(config.limits).feed(frame.data)
-        if (messages.size != 1 || messages.single() is QuicChannelMessage.Open) {
-            throw KQuicError.ProtocolViolation("Invalid KQuic DATAGRAM payload")
-        }
-        processChannelMessage(NO_STREAM_ID, messages.single())
-    }
-
-    private suspend fun processChannelMessage(streamId: ULong, message: QuicChannelMessage) {
-        when (message) {
-            is QuicChannelMessage.Open -> {
-                val existing = channelsByLabel[message.label]
-                if (existing != null) {
-                    if (existing.delivery != message.delivery) {
-                        throw KQuicError.ProtocolViolation(
-                            "Channel ${message.label} reopened with another delivery mode"
-                        )
-                    }
-                    channelsById[message.channelId] = existing
-                    return
-                }
-                val binding = ChannelBinding(
-                    id = message.channelId,
-                    label = message.label,
-                    delivery = message.delivery,
-                    streamId = streamId
-                )
-                channelsById[binding.id] = binding
-                channelsByLabel[binding.label] = binding
-                emitEvent(
-                    KQuicTransportEvent.IncomingChannel(
-                        KQuicChannelConfig(binding.label, binding.delivery)
-                    )
-                )
-            }
-            is QuicChannelMessage.Bytes -> {
-                val binding = channelsById[message.channelId] ?: if (streamId == NO_STREAM_ID) {
-                    datagramsDropped++
-                    return
-                } else {
-                    throw KQuicError.ProtocolViolation("Payload for unknown channel")
-                }
-                emitEvent(KQuicTransportEvent.BytesReceived(binding.label, message.payload))
-            }
-            is QuicChannelMessage.Text -> {
-                val binding = channelsById[message.channelId] ?: if (streamId == NO_STREAM_ID) {
-                    datagramsDropped++
-                    return
-                } else {
-                    throw KQuicError.ProtocolViolation("Payload for unknown channel")
-                }
-                emitEvent(KQuicTransportEvent.TextReceived(binding.label, message.text))
-            }
-            is QuicChannelMessage.Close -> {
-                val binding = channelsById.remove(message.channelId) ?: if (
-                    streamId == NO_STREAM_ID
-                ) {
-                    datagramsDropped++
-                    return
-                } else {
-                    throw KQuicError.ProtocolViolation("Close for unknown channel")
-                }
-                channelsByLabel.remove(binding.label)
-                emitEvent(KQuicTransportEvent.ChannelClosed(binding.label))
-            }
-        }
+        channelManager.close(label)
     }
 
     private suspend fun handleTick() {
         if (closing) return
         val now = nowMs()
-        ackTrackers.forEach { (space, tracker) ->
+        packetSpaces.values.forEach { packetSpace ->
+            val tracker = packetSpace.ackTracker
             if (tracker.hasPendingAck && now >= tracker.ackDeadlineMs) {
                 tracker.frame(now, LOCAL_ACK_DELAY_EXPONENT)?.let {
-                    enqueue(space.encryptionLevel, it, required = false)
+                    enqueue(packetSpace.encryptionLevel, it, required = false)
                 }
             }
         }
-        QuicPacketNumberSpace.entries.forEach { space ->
-            val recoverySpace = recovery[space]
+        packetSpaces.values.forEach { packetSpace ->
+            val recoverySpace = packetSpace.recovery
             if (recoverySpace.lossDeadlineMs(now) <= now) {
                 val probes = recoverySpace.ptoProbeFrames()
                 if (probes.isEmpty()) {
-                    enqueue(space.encryptionLevel, QuicFrame.Ping, required = false)
+                    enqueue(packetSpace.encryptionLevel, QuicFrame.Ping, required = false)
                 } else {
                     probes.forEach {
-                        enqueue(space.encryptionLevel, it, required = false)
+                        enqueue(packetSpace.encryptionLevel, it, required = false)
                     }
                 }
                 recoverySpace.onPtoExpired()
             }
         }
-        if (now - lastActivityMs >= config.idleTimeoutMs) {
-            throw KQuicError.ConnectionTimedOut(config.idleTimeoutMs)
-        }
-        if (now - lastNetworkCheckAtMs >= NETWORK_CHECK_INTERVAL_MS) {
-            lastNetworkCheckAtMs = now
-            if (platformServices.hostAddresses().sorted() != initialHostAddresses) {
-                gracefulClose("NETWORK_CHANGED")
-                return
+        core.deadline(now).forEach { effect ->
+            when (effect) {
+                QuicConnectionCore.Effect.IdleTimeout ->
+                    throw KQuicError.ConnectionTimedOut(config.idleTimeoutMs)
+                QuicConnectionCore.Effect.CheckNetwork -> {
+                    if (platformRuntime.network.hostAddresses().sorted() != initialHostAddresses) {
+                        gracefulClose("NETWORK_CHANGED")
+                        return
+                    }
+                }
+                is QuicConnectionCore.Effect.DatagramReady,
+                is QuicConnectionCore.Effect.DatagramToSend,
+                is QuicConnectionCore.Effect.CloseRequested -> Unit
             }
         }
-        if (now - lastStatsAtMs >= STATS_INTERVAL_MS) emitStats(now)
-        drainStreamWrites()
+        channelManager.drain()
     }
 
     private suspend fun flush() {
@@ -866,14 +508,14 @@ internal class CommonQuicConnectionActor(
             QuicEncryptionLevel.HANDSHAKE,
             QuicEncryptionLevel.ONE_RTT
         )) {
-            val queue = checkNotNull(frameQueues[level])
-            while (queue.isNotEmpty() && protectionByLevel[level] != null && !closing) {
+            val packetSpace = packetSpaces[level]
+            val queue = packetSpace.frameQueue
+            while (queue.isNotEmpty() && packetSpace.protection != null && !closing) {
                 val queued = queue.removeFirst()
                 queuedFrameBytes -= queued.estimatedBytes
                 val frame = queued.frame
                 val encoded = QuicFrames.encode(frame)
-                val space = level.packetNumberSpace
-                val recoverySpace = recovery[space]
+                val recoverySpace = packetSpace.recovery
                 val estimatedPacketSize = if (level == QuicEncryptionLevel.INITIAL) {
                     QuicInitialDatagrams.MINIMUM_SIZE
                 } else {
@@ -884,9 +526,9 @@ internal class CommonQuicConnectionActor(
                     queuedFrameBytes += queued.estimatedBytes
                     break
                 }
-                val packetNumber = checkNotNull(nextPacketNumber[space])
-                nextPacketNumber[space] = packetNumber + 1uL
-                val keys = checkNotNull(protectionByLevel[level]).write
+                val packetNumber = packetSpace.nextPacketNumber
+                packetSpace.nextPacketNumber = packetNumber + 1uL
+                val keys = checkNotNull(packetSpace.protection).write
                 val packet = when (level) {
                     QuicEncryptionLevel.INITIAL -> packetProtection.sealLong(
                         type = QuicLongPacketType.INITIAL,
@@ -918,13 +560,11 @@ internal class CommonQuicConnectionActor(
                         keys = keys
                     )
                 }
-                socket.send(remoteAddress, packet)
-                lastActivityMs = nowMs()
-                bytesSent += packet.size
-                packetsSent++
+                val outgoing = checkNotNull(core.transmit(remoteAddress, packet, nowMs()))
+                ioDriver.send(outgoing.destination, outgoing.payload)
                 recoverySpace.onPacketSent(
                     number = packetNumber,
-                    sentAtMs = lastActivityMs,
+                    sentAtMs = outgoing.sentAtMs,
                     bytes = packet.size,
                     ackEliciting = frame.isAckEliciting(),
                     retransmittableFrames = if (frame.isRetransmittable()) {
@@ -935,14 +575,14 @@ internal class CommonQuicConnectionActor(
                 )
                 if (frame == QuicFrame.HandshakeDone &&
                     endpointRole == QuicEndpointRole.SERVER &&
-                    tlsComplete
+                    handshake.complete
                 ) {
                     handshakeConfirmed = true
                     completeConnection()
                     discardKeys(QuicEncryptionLevel.INITIAL)
                     discardKeys(QuicEncryptionLevel.HANDSHAKE)
-                    recovery.discard(QuicPacketNumberSpace.INITIAL)
-                    recovery.discard(QuicPacketNumberSpace.HANDSHAKE)
+                    packetSpaces[QuicPacketNumberSpace.INITIAL].discardRecovery()
+                    packetSpaces[QuicPacketNumberSpace.HANDSHAKE].discardRecovery()
                 }
             }
         }
@@ -960,20 +600,9 @@ internal class CommonQuicConnectionActor(
             }
             return false
         }
-        checkNotNull(frameQueues[level]).addLast(QueuedFrame(frame, estimated))
+        packetSpaces[level].frameQueue.addLast(QuicQueuedFrame(frame, estimated))
         queuedFrameBytes += estimated
         return true
-    }
-
-    private fun initialPeerStreamCredit(streamId: ULong): ULong {
-        val parameters = remoteParameters ?: return 0uL
-        val locallyInitiated = (streamId and 0x01uL) ==
-            if (endpointRole == QuicEndpointRole.CLIENT) 0uL else 1uL
-        return if (locallyInitiated) {
-            parameters.initialMaxStreamDataBidiRemote
-        } else {
-            parameters.initialMaxStreamDataBidiLocal
-        }
     }
 
     private fun validateDestinationConnectionId(invariant: QuicInvariantHeader) {
@@ -997,19 +626,22 @@ internal class CommonQuicConnectionActor(
     }
 
     private fun discardKeys(level: QuicEncryptionLevel) {
-        protectionByLevel.remove(level)?.let { pair ->
+        packetSpaces[level].protection?.let { pair ->
             pair.read.clear()
             pair.write.clear()
         }
+        packetSpaces[level].protection = null
     }
 
     private fun completeConnection() {
-        if (!handshakeConfirmed || !tlsComplete || connected.isCompleted) return
+        if (!handshakeConfirmed || !handshake.complete || connected.isCompleted) return
+        val wireStats = core.stats()
         logger.info(
-            "QUIC handshake confirmed packetsSent=$packetsSent packetsReceived=$packetsReceived"
+            "QUIC handshake confirmed packetsSent=${wireStats.packetsSent} " +
+                "packetsReceived=${wireStats.packetsReceived}"
         )
         connected.complete(
-            remoteIdentity ?: throw KQuicError.AuthenticationFailed(
+            handshake.remoteIdentity ?: throw KQuicError.AuthenticationFailed(
                 "TLS completed without a remote identity"
             )
         )
@@ -1023,7 +655,7 @@ internal class CommonQuicConnectionActor(
 
     private suspend fun gracefulClose(reason: String) {
         if (closing) return
-        if (protectionByLevel[QuicEncryptionLevel.ONE_RTT] != null) {
+        if (packetSpaces[QuicEncryptionLevel.ONE_RTT].protection != null) {
             enqueue(
                 QuicEncryptionLevel.ONE_RTT,
                 QuicFrame.ConnectionClose(0uL, 0uL, reason),
@@ -1031,37 +663,33 @@ internal class CommonQuicConnectionActor(
             )
             flush()
         }
-        closing = true
+        core.close(reason)
         if (!connected.isCompleted) {
             connected.completeExceptionally(KQuicError.TransportFailure(reason))
         }
         emitEvent(KQuicTransportEvent.Disconnected(reason))
     }
 
-    private suspend fun emitStats(now: Long) {
-        lastStatsAtMs = now
-        val spaces = QuicPacketNumberSpace.entries.map { recovery[it] }
-        emitEvent(
-            KQuicTransportEvent.StatsUpdated(
-                KQuicTransportStats(
-                    bytesSent = bytesSent,
-                    bytesReceived = bytesReceived,
-                    packetsSent = packetsSent,
-                    packetsReceived = packetsReceived,
-                    packetsLost = spaces.sumOf(QuicRecovery::packetsLost),
-                    datagramsDropped = datagramsDropped,
-                    minimumRttMs = spaces.mapNotNull(QuicRecovery::minimumRttMs).minOrNull(),
-                    smoothedRttMs = spaces.mapNotNull(QuicRecovery::smoothedRttMs).minOrNull(),
-                    congestionWindowBytes = spaces.sumOf(QuicRecovery::congestionWindow),
-                    bytesInFlight = spaces.sumOf(QuicRecovery::bytesInFlight),
-                    ptoCount = spaces.sumOf { it.ptoCount.toLong() },
-                    streamsBlocked = streamsBlocked
-                )
-            )
+    private fun currentStats(): KQuicTransportStats {
+        val spaces = packetSpaces.values.map(QuicPacketSpaceState::recovery)
+        val wire = core.stats()
+        return KQuicTransportStats(
+            bytesSent = wire.bytesSent,
+            bytesReceived = wire.bytesReceived,
+            packetsSent = wire.packetsSent,
+            packetsReceived = wire.packetsReceived,
+            packetsLost = spaces.sumOf(QuicRecovery::packetsLost),
+            datagramsDropped = channelManager.datagramsDropped,
+            minimumRttMs = spaces.mapNotNull(QuicRecovery::minimumRttMs).minOrNull(),
+            smoothedRttMs = spaces.mapNotNull(QuicRecovery::smoothedRttMs).minOrNull(),
+            congestionWindowBytes = spaces.sumOf(QuicRecovery::congestionWindow),
+            bytesInFlight = spaces.sumOf(QuicRecovery::bytesInFlight),
+            ptoCount = spaces.sumOf { it.ptoCount.toLong() },
+            streamsBlocked = channelManager.streamsBlocked
         )
     }
 
-    private fun nowMs(): Long = platformServices.monotonicClock.nowNanos() / 1_000_000L
+    private fun nowMs(): Long = platformRuntime.clock.nowNanos() / 1_000_000L
 
     private fun QuicFrame.isAckEliciting(): Boolean =
         this !is QuicFrame.Ack && this !is QuicFrame.ConnectionClose
@@ -1071,29 +699,13 @@ internal class CommonQuicConnectionActor(
             this !is QuicFrame.Datagram &&
             this !is QuicFrame.ConnectionClose
 
-    private val QuicEncryptionLevel.packetNumberSpace: QuicPacketNumberSpace
-        get() = when (this) {
-            QuicEncryptionLevel.INITIAL -> QuicPacketNumberSpace.INITIAL
-            QuicEncryptionLevel.HANDSHAKE -> QuicPacketNumberSpace.HANDSHAKE
-            QuicEncryptionLevel.ONE_RTT -> QuicPacketNumberSpace.APPLICATION_DATA
-        }
-
-    private val QuicPacketNumberSpace.encryptionLevel: QuicEncryptionLevel
-        get() = when (this) {
-            QuicPacketNumberSpace.INITIAL -> QuicEncryptionLevel.INITIAL
-            QuicPacketNumberSpace.HANDSHAKE -> QuicEncryptionLevel.HANDSHAKE
-            QuicPacketNumberSpace.APPLICATION_DATA -> QuicEncryptionLevel.ONE_RTT
-        }
 }
 
 private const val CONNECTION_ID_LENGTH = 8
 private const val PACKET_NUMBER_LENGTH = 2
 private const val PACKET_OVERHEAD = 64
-private const val MAX_UDP_DATAGRAM_SIZE = 1_200
 private const val NETWORK_CHECK_INTERVAL_MS = 1_000L
 private const val MAX_FRAME_PAYLOAD = 1_150
 private const val LOCAL_ACK_DELAY_EXPONENT = 3
 private const val TICK_INTERVAL_MS = 10L
-private const val STATS_INTERVAL_MS = 1_000L
 private const val APPLICATION_MESSAGE_OVERHEAD = 32
-private val NO_STREAM_ID = ULong.MAX_VALUE

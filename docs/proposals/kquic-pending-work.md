@@ -1,18 +1,18 @@
 # KQuic: trabajo pendiente
 
-Este documento recoge lo que queda después de conectar la fachada experimental `KQuicPeer` con el
-transporte UDP y el actor QUIC común.
+Este documento recoge lo que queda después de separar la fachada experimental `KQuicPeer`, el
+signaling, la conectividad, el core QUIC y el driver UDP.
 
 ## Disponible en el prototipo
 
-- Transporte real en Android 24+, iOS 16+ y JVM, con sockets UDP no bloqueantes y cierre
+- Transporte real en Android 24+, iOS 16+ y macOS ARM64, con sockets UDP no bloqueantes y cierre
   idempotente.
 - Gathering interno de candidatos host y server-reflexive IPv4/IPv6. Los Binding STUN salen por el
   mismo socket que conserva el candidato.
 - Connectivity checks STUN autenticados, retransmisión acotada, roles derivados de `initiator`,
   nominación por el iniciador y selección determinista de ruta.
-- Actor serial propietario de Connection IDs, packet numbers, claves, ACK, recovery, streams,
-  timers, congestión y estado.
+- Core determinista sin sockets ni reloj implícito, con espacios de packet number, handshake,
+  canales, flow control y lifecycle separados; un driver ejecuta I/O y deadlines.
 - QUIC v1 Initial/Handshake/1-RTT con AES-128-GCM, header protection, TLS 1.3 mutuo,
   transport parameters y `HANDSHAKE_DONE`.
 - Streams fiables con framing incremental y flow control, más QUIC DATAGRAM para canales
@@ -20,7 +20,7 @@ transporte UDP y el actor QUIC común.
 - Límites de memoria y colas, backpressure en la entrada, idle timeout, cierre local/remoto y
   métricas de RTT, pérdida, congestión, bytes en vuelo, PTO, streams bloqueados y datagrams
   descartados.
-- Vectores RFC 9001/NIST idénticos en JVM, Android host e iOS Simulator; red determinista con
+- Vectores RFC 9001/NIST idénticos en Android host e iOS Simulator; red determinista con
   pérdida, duplicación, reordenación y MTU de 1.200 bytes; loopback UDP real con payload
   fragmentado, streams y datagrams.
 

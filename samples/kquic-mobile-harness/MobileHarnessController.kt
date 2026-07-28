@@ -24,8 +24,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * channel and render [lines] plus [stats].
  */
 class MobileHarnessController(
-    scope: CoroutineScope,
-    platformContext: Any?,
+    private val scope: CoroutineScope,
     initiator: Boolean,
     roomId: String,
     stunServers: List<KQuicStunServer>,
@@ -37,7 +36,7 @@ class MobileHarnessController(
     val stats: StateFlow<KQuicStats> = mutableStats.asStateFlow()
 
     private val peer = KQuicPeer(
-        context = KQuicContext(scope, platformContext),
+        context = KQuicContext(scope),
         config = KQuicConfig(
             initiator = initiator,
             rendezvousId = roomId,
@@ -53,8 +52,10 @@ class MobileHarnessController(
                     .onFailure { append("signaling failed: ${it.message}") }
             }
         }
-        peer.onConnectionState { append("state=$it") }
-        peer.onStats { mutableStats.value = it }
+        peer.onConnectionState {
+            append("state=$it")
+            refreshStats()
+        }
         peer.onChannel { channel ->
             append("incoming channel=${channel.label} delivery=${channel.delivery}")
             channel.onBytes { append("${channel.label}: ${it.size} bytes") }
@@ -72,6 +73,7 @@ class MobileHarnessController(
         )
         return channel.send(ByteArray(size) { (it and 0xff).toByte() }).also {
             append("reliable accepted=$it bytes=$size")
+            refreshStats()
         }
     }
 
@@ -79,10 +81,17 @@ class MobileHarnessController(
         val channel = peer.createChannel(
             KQuicChannelConfig("unreliable", KQuicDelivery.UNRELIABLE)
         )
-        return channel.send(text).also { append("unreliable accepted=$it") }
+        return channel.send(text).also {
+            append("unreliable accepted=$it")
+            refreshStats()
+        }
     }
 
     fun close() = peer.close()
+
+    private fun refreshStats() {
+        scope.launch { mutableStats.value = peer.getStats() }
+    }
 
     private fun append(line: String) {
         mutableLines.value = (mutableLines.value + line).takeLast(200)

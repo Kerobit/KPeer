@@ -52,9 +52,12 @@ class CommonKQuicLoopbackTest {
             val initiatorConnected = withTimeoutOrNull(15_000) {
                 initiator.connectionState.first { it == KQuicPeerConnectionState.CONNECTED }
             }
-            check(initiatorConnected != null) {
-                "Initiator states=$initiatorStateTrace, responder states=$responderStateTrace, " +
-                    "initiator stats=${initiator.stats.first()}, responder stats=${responder.stats.first()}"
+            if (initiatorConnected == null) {
+                error(
+                    "Initiator states=$initiatorStateTrace, responder states=$responderStateTrace, " +
+                        "initiator stats=${initiator.getStats()}, " +
+                        "responder stats=${responder.getStats()}"
+                )
             }
             withTimeout(10_000) {
                 responder.connectionState.first { it == KQuicPeerConnectionState.CONNECTED }
@@ -118,7 +121,7 @@ class CommonKQuicLoopbackTest {
                 KQuicPeerConnectionState.DISCONNECTED,
                 withTimeout(5_000) { remoteClosed.await() }
             )
-            assertEquals("application_close", responder.stats.first().closeReason)
+            assertEquals("application_close", responder.getStats().closeReason)
         } finally {
             initiatorStateSubscription.cancel()
             responderStateSubscription.cancel()
@@ -206,11 +209,10 @@ class CommonKQuicLoopbackTest {
                     }
                 }
             )
+            val closeReason = initiator.getStats().closeReason.orEmpty()
             assertTrue(
-                initiator.stats.first().closeReason.orEmpty().contains(
-                    "fingerprint",
-                    ignoreCase = true
-                )
+                closeReason.contains("fingerprint", ignoreCase = true),
+                closeReason
             )
         } finally {
             initiator.close()
@@ -245,7 +247,7 @@ class CommonKQuicLoopbackTest {
                 initiator.connectionState.first { it == KQuicPeerConnectionState.FAILED }
             }
             assertTrue(
-                initiator.stats.first().closeReason.orEmpty().contains(
+                initiator.getStats().closeReason.orEmpty().contains(
                     "connectivity checks",
                     ignoreCase = true
                 )
@@ -275,17 +277,16 @@ class CommonKQuicLoopbackTest {
         endpoint: NatEndpoint,
         network: AsymmetricNatDatagramNetwork,
     ): KQuicPeer {
-        val platformServices = NatKQuicPlatformServices(
-            delegate = createKQuicPlatformServices(null),
-            datagramSocketFactory = network.factory(endpoint),
+        val platformRuntime = NatKQuicPlatformRuntime(
+            delegate = createKQuicPlatformRuntime(),
+            udp = network.factory(endpoint),
             hostAddress = endpoint.privateAddress.host,
         )
         return KQuicPeer(
             context = KQuicContext(
                 scope = this,
-                platformContext = null,
-                transportFactory = CommonKQuicTransportFactory(this, platformServices),
-                platformServices = platformServices,
+                transportFactory = CommonKQuicTransportFactory(this, platformRuntime),
+                platformRuntime = platformRuntime,
             ),
             config = KQuicConfig(
                 initiator = initiator,
@@ -304,12 +305,12 @@ private data class NatEndpoint(
     val privateAddressReachable: Boolean,
 )
 
-private class NatKQuicPlatformServices(
-    delegate: KQuicPlatformServices,
-    override val datagramSocketFactory: KQuicDatagramSocketFactory,
+private class NatKQuicPlatformRuntime(
+    delegate: KQuicPlatformRuntime,
+    override val udp: KQuicDatagramSocketFactory,
     private val hostAddress: String,
-) : KQuicPlatformServices by delegate {
-    override fun hostAddresses(): List<String> = listOf(hostAddress)
+) : KQuicPlatformRuntime by delegate {
+    override val network = KQuicNetworkRuntime { listOf(hostAddress) }
 }
 
 private class AsymmetricNatDatagramNetwork {

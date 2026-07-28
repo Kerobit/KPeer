@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineStart
 
@@ -30,11 +31,14 @@ class KQuicChannel internal constructor(
     private val _state = MutableStateFlow(KQuicChannelState.CONNECTING)
     private val _bytes = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
     private val _text = MutableSharedFlow<String>(extraBufferCapacity = 64)
+    private val _bufferedAmount = MutableStateFlow(0L)
 
     val state: Flow<KQuicChannelState> = _state.asStateFlow()
     val bytes: Flow<ByteArray> = _bytes.asSharedFlow()
     val text: Flow<String> = _text.asSharedFlow()
+    val bufferedAmount: Flow<Long> = _bufferedAmount.asStateFlow()
     val currentState: KQuicChannelState get() = _state.value
+    val currentBufferedAmount: Long get() = _bufferedAmount.value
 
     fun send(bytes: ByteArray): Boolean =
         _state.value == KQuicChannelState.OPEN && send(this, bytes, false)
@@ -57,6 +61,13 @@ class KQuicChannel internal constructor(
         return KQuicSubscription { job.cancel() }
     }
 
+    fun onBufferedAmount(handler: (Long) -> Unit): KQuicSubscription {
+        val job = context.scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            bufferedAmount.collect(handler)
+        }
+        return KQuicSubscription { job.cancel() }
+    }
+
     fun close() {
         if (_state.value == KQuicChannelState.CLOSED) return
         _state.value = KQuicChannelState.CLOSING
@@ -64,7 +75,16 @@ class KQuicChannel internal constructor(
     }
 
     internal fun markOpen() { _state.value = KQuicChannelState.OPEN }
-    internal fun markClosed() { _state.value = KQuicChannelState.CLOSED }
+    internal fun markClosed() {
+        _bufferedAmount.value = 0
+        _state.value = KQuicChannelState.CLOSED
+    }
+    internal fun addBuffered(bytes: Int) {
+        _bufferedAmount.update { it + bytes }
+    }
+    internal fun drainBuffered(bytes: Int) {
+        _bufferedAmount.update { (it - bytes).coerceAtLeast(0) }
+    }
     internal fun emitBytes(value: ByteArray) { _bytes.tryEmit(value) }
     internal fun emitText(value: String) { _text.tryEmit(value) }
 }

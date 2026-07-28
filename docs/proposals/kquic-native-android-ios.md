@@ -1,8 +1,8 @@
-# KQuic: transporte QUIC nativo para Android e iOS
+# KQuic: transporte QUIC nativo para Android, iOS y macOS ARM64
 
 **Estado:** prototipo P2P funcional (`:kquic`), pendiente de aceptación en dispositivos físicos
 
-**Ámbito:** módulo `:kquic` dentro de KPeer; Android, iOS y escritorio nativo/JVM
+**Ámbito:** módulo `:kquic` dentro de KPeer; Android, iOS y `macosArm64`
 **Decisión de partida:** implementar el protocolo QUIC en el proyecto; no enlazar Quinn, MsQuic, libp2p ni una pila QUIC del sistema como motor de producción.
 
 ## Resumen ejecutivo
@@ -17,7 +17,7 @@ La implementación propia debe limitarse a la **pila de protocolo y sus máquina
 
 ### Objetivos de la primera versión
 
-- QUIC v1 P2P sobre UDP para Android 24+ e iOS 16+. JVM es el banco de pruebas del núcleo.
+- QUIC v1 P2P sobre UDP para Android 24+, iOS 16+ y macOS ARM64.
 - TLS 1.3 dentro de QUIC, autenticación de servidor y *pinning* de clave pública o cadena de confianza configurable.
 - Streams bidireccionales y unidireccionales, multiplexados y con *flow control*.
 - Datagrams QUIC opcionales para mensajes no fiables y de baja latencia.
@@ -55,7 +55,7 @@ La similitud es de ergonomía, no una falsa equivalencia de transporte. `KQuic` 
 
 ```kotlin
 val peer = KQuicPeer(
-    context = KQuicContext(scope = scope, platformContext = androidContext),
+    context = KQuicContext(scope),
     config = KQuicConfig(
         initiator = true,
         rendezvousId = roomId,
@@ -66,23 +66,23 @@ val peer = KQuicPeer(
 )
 
 peer.onSignal(signaling::send)
-peer.start()
-peer.signal(signalReceivedFromRemote)
-
 val channel = peer.createChannel(
     KQuicChannelConfig(label = "game", delivery = KQuicDelivery.RELIABLE_ORDERED)
 )
-channel.send(bytes)
+channel.onBytes(::handleBytes)
 
+peer.start()
+peer.signal(signalReceivedFromRemote)
 peer.channels.collect { incoming -> /* bytes/text/state */ }
 peer.connectionState.collect { state -> /* CONNECTING, CONNECTED, ... */ }
+val stats = peer.getStats()
 ```
 
 Tipos principales:
 
 - `KQuicPeer`: posee una conexión P2P, reúne candidatos, intercambia señales y expone estado,
   estadísticas, canales y cierre.
-- `KQuicContext`: agrupa scope, contexto de plataforma y servicios internos.
+- `KQuicContext`: agrupa el scope y el runtime interno de la plataforma.
 - `KQuicOffer`/`KQuicAnswer`: candidatos, credenciales efímeras y fingerprint de identidad.
 - `KQuicChannel`: adaptador de alto nivel para un stream o un flujo de datagrams; conserva `send(ByteArray)`, `send(String)`, callbacks/`Flow` y `close()` cercanos a `KChannel`.
 - `KQuicChannelConfig`: etiqueta y modo de entrega. `RELIABLE_ORDERED` usa un stream; `UNRELIABLE` usa QUIC DATAGRAM. No se ofrecerá `reliable = true, ordered = false` hasta definir explícitamente su framing y semántica.
@@ -234,7 +234,8 @@ para una versión estable, pero no bloquean este prototipo ni la siguiente integ
 - Los datagrams negociados pueden perderse, no se retransmiten y respetan el tamaño anunciado.
 - Un certificado, pin, token Retry, frame o parámetro de transporte inválido se rechaza sin bloqueo ni crecimiento no acotado de memoria.
 - Las métricas y el motivo de cierre permiten diagnosticar un fallo sin registrar secretos.
-- El mismo núcleo supera los vectores en JVM, Android e iOS; Android e iOS pasan la matriz de redes física acordada.
+- El mismo núcleo supera los vectores en Android host y Apple; Android e iOS pasan la matriz de
+  redes física acordada.
 
 ## Decisiones adoptadas
 

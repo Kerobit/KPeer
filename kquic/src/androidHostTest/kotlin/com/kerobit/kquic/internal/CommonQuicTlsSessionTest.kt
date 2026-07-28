@@ -63,22 +63,22 @@ class CommonQuicTlsSessionTest {
 
     @Test
     fun jca_p256_ecdhe_and_certificate_verify_complete_mutual_tls() = runBlocking {
-        val services = createKQuicPlatformServices(null)
+        val services = createKQuicPlatformRuntime()
         val client = CommonQuicTlsSession(
             QuicEndpointRole.CLIENT,
-            services.ephemeralIdentityProvider.identityFor(
+            services.crypto.ephemeralIdentityProvider.identityFor(
                 KQuicHandshakeRequest("jca", true)
             ),
             parameters(byteArrayOf(3)),
-            JvmTls13HandshakeCrypto
+            AndroidTls13HandshakeCrypto
         )
         val server = CommonQuicTlsSession(
             QuicEndpointRole.SERVER,
-            services.ephemeralIdentityProvider.identityFor(
+            services.crypto.ephemeralIdentityProvider.identityFor(
                 KQuicHandshakeRequest("jca", false)
             ),
             parameters(byteArrayOf(4)),
-            JvmTls13HandshakeCrypto
+            AndroidTls13HandshakeCrypto
         )
 
         val clientHello = client.start().single() as QuicTlsEvent.CryptoData
@@ -163,7 +163,7 @@ class CommonQuicTlsSessionTest {
     private class FakeHandshakeCrypto(
         val marker: Int
     ) : Tls13HandshakeCrypto {
-        override val primitives: QuicCryptoPrimitives = JvmQuicCryptoPrimitives
+        override val primitives: QuicCryptoPrimitives = AndroidQuicCryptoPrimitives
 
         override fun createP256KeyAgreement(): Tls13KeyAgreement = object : Tls13KeyAgreement {
             override val publicKey = ByteArray(65) { index ->

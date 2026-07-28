@@ -22,7 +22,7 @@ import kotlin.test.assertTrue
 class CommonQuicConnectionActorNetworkTest {
     @Test
     fun actor_recovers_from_loss_duplication_and_reordering_at_1200_byte_mtu() = runBlocking {
-        val services = createKQuicPlatformServices(null)
+        val services = createKQuicPlatformRuntime()
         val network = DeterministicDatagramNetwork()
         val clientSocket = network.socket(41_001)
         val serverSocket = network.socket(41_002)
@@ -34,10 +34,10 @@ class CommonQuicConnectionActorNetworkTest {
             security = KQuicSecurity.ephemeralWithAuthenticatedSignaling(),
             connectionTimeoutMs = 10_000
         )
-        val clientIdentity = services.ephemeralIdentityProvider.identityFor(
+        val clientIdentity = services.crypto.ephemeralIdentityProvider.identityFor(
             KQuicHandshakeRequest(config.rendezvousId, true)
         )
-        val serverIdentity = services.ephemeralIdentityProvider.identityFor(
+        val serverIdentity = services.crypto.ephemeralIdentityProvider.identityFor(
             KQuicHandshakeRequest(config.rendezvousId, false)
         )
         val client = CommonQuicConnectionActor(
@@ -47,7 +47,7 @@ class CommonQuicConnectionActorNetworkTest {
             role = KQuicTransportRole.CLIENT,
             identity = clientIdentity,
             config = config,
-            platformServices = services,
+            platformRuntime = services,
             emitEvent = clientEvents::send
         )
         val server = CommonQuicConnectionActor(
@@ -57,7 +57,7 @@ class CommonQuicConnectionActorNetworkTest {
             role = KQuicTransportRole.SERVER,
             identity = serverIdentity,
             config = config.copy(initiator = false),
-            platformServices = services,
+            platformRuntime = services,
             emitEvent = serverEvents::send
         )
         try {

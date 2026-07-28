@@ -23,11 +23,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 
 @OptIn(ExperimentalKQuicApi::class)
-class JvmStunGatheringTest {
+class AndroidStunGatheringTest {
     @Test
     fun server_reflexive_candidate_reuses_the_host_candidate_socket() = runBlocking {
-        val services = createKQuicPlatformServices(null)
-        val advertisedAddress = services.hostAddresses().first()
+        val services = createKQuicPlatformRuntime()
+        val advertisedAddress = services.network.hostAddresses().first()
         val server = DatagramSocket(0, InetAddress.getByName("0.0.0.0"))
         server.soTimeout = 5_000
         val bindingSourcePort = async(Dispatchers.IO) {
@@ -38,9 +38,12 @@ class JvmStunGatheringTest {
             assertEquals(StunProtocol.BINDING_REQUEST, message.type)
             val response = StunProtocol.bindingSuccessResponse(
                 transactionId = message.transactionId,
-                mappedAddress = KQuicSocketAddress(input.address.hostAddress, input.port),
+                mappedAddress = KQuicSocketAddress(
+                    checkNotNull(input.address.hostAddress),
+                    input.port
+                ),
                 integrityPassword = null,
-                hmacSha256 = JvmQuicCryptoPrimitives::hmacSha256
+                hmacSha256 = AndroidQuicCryptoPrimitives::hmacSha256
             )
             server.send(DatagramPacket(response, response.size, input.address, input.port))
             input.port
