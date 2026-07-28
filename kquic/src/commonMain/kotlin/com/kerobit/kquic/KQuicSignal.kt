@@ -35,10 +35,7 @@ data class KQuicCandidate(
 }
 
 /** A local/remote candidate pair selected after connectivity checks. */
-data class KQuicCandidatePair(
-    val local: KQuicCandidate,
-    val remote: KQuicCandidate
-)
+data class KQuicCandidatePair(val local: KQuicCandidate, val remote: KQuicCandidate)
 
 /** Signals are transported by the app; KQuic never opens a signaling connection itself. */
 sealed interface KQuicSignal {

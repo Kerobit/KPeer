@@ -101,9 +101,7 @@ internal class KQuicConnection(
             if (remote is KQuicOffer && !config.initiator) {
                 start()
             } else {
-                throw KQuicError.InvalidSignal(
-                    "Call start() before applying this signal"
-                )
+                throw KQuicError.InvalidSignal("Call start() before applying this signal")
             }
         }
         if (remote is KQuicOffer && !config.initiator) {
@@ -199,21 +197,9 @@ internal class KQuicConnection(
                 val identity = signaler.identity()
                 val remoteIdentity = config.connectionTimeoutMs?.let { timeoutMs ->
                     withTimeoutOrNull(timeoutMs) {
-                        transport.connect(
-                            selected,
-                            identity,
-                            config.quicRole,
-                            localCredentials,
-                            remoteCredentials
-                        )
+                        transport.connect(selected, identity, config.quicRole, localCredentials, remoteCredentials)
                     } ?: throw KQuicError.ConnectionTimedOut(timeoutMs)
-                } ?: transport.connect(
-                    selected,
-                    identity,
-                    config.quicRole,
-                    localCredentials,
-                    remoteCredentials
-                )
+                } ?: transport.connect(selected, identity, config.quicRole, localCredentials, remoteCredentials)
                 stateMutex.withLock {
                     logger.info("Connectivity and QUIC handshake completed; verifying peer identity")
                     transitionTo(KQuicPeerConnectionState.AUTHENTICATING)
@@ -224,9 +210,7 @@ internal class KQuicConnection(
             } catch (error: CancellationException) {
                 if (!closed) throw error
             } catch (error: Throwable) {
-                candidateAttemptFailed(
-                    KQuicError.TransportFailure(error.message ?: "QUIC transport failed")
-                )
+                candidateAttemptFailed(KQuicError.TransportFailure(error.message ?: "QUIC transport failed"))
             }
         }
     }
@@ -264,10 +248,7 @@ internal class KQuicConnection(
                 "Candidate pairs exhausted attempted=${connectivity.attemptCount} " +
                     "local=${localCandidates.size} remote=${remoteCandidates.size}"
             )
-            fail(
-                connectivity.lastError
-                    ?: KQuicError.TransportFailure("No candidate pair connected")
-            )
+            fail(connectivity.lastError ?: KQuicError.TransportFailure("No candidate pair connected"))
         }
     }
 

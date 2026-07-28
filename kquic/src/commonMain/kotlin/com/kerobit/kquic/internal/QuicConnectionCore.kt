@@ -1,15 +1,27 @@
 package com.kerobit.kquic.internal
 
-/**
- * Deterministic connection shell. It owns lifecycle, deadlines and wire counters while the actor
- * executes its effects. There are deliberately no sockets, coroutines, flows or system-clock
- * reads in this type: time and datagrams are explicit inputs.
- */
+import com.kerobit.kquic.KQuicChannelConfig
+import com.kerobit.kquic.KQuicTransportEvent
+
 internal class QuicConnectionCore(
     startedAtMs: Long,
     private val idleTimeoutMs: Long,
     private val networkCheckIntervalMs: Long
 ) {
+    sealed interface Command {
+        data class Receive(val datagram: KQuicInboundDatagram, val nowMs: Long) : Command
+        data class Deadline(val nowMs: Long) : Command
+        data class OpenChannel(val config: KQuicChannelConfig) : Command
+        data class Send(
+            val label: String,
+            val payload: ByteArray,
+            val text: Boolean,
+            val reservedBytes: Int
+        ) : Command
+        data class CloseChannel(val label: String) : Command
+        data class Close(val reason: String) : Command
+    }
+
     sealed interface Effect {
         data class DatagramReady(val datagram: KQuicInboundDatagram) : Effect
         data class DatagramToSend(
@@ -19,15 +31,19 @@ internal class QuicConnectionCore(
         ) : Effect
         data object IdleTimeout : Effect
         data object CheckNetwork : Effect
+        data class OpenChannelRequested(val config: KQuicChannelConfig) : Effect
+        data class SendRequested(
+            val label: String,
+            val payload: ByteArray,
+            val text: Boolean,
+            val reservedBytes: Int
+        ) : Effect
+        data class CloseChannelRequested(val label: String) : Effect
         data class CloseRequested(val reason: String) : Effect
+        data class EventReady(val event: KQuicTransportEvent) : Effect
     }
 
-    data class WireStats(
-        val bytesSent: Long,
-        val bytesReceived: Long,
-        val packetsSent: Long,
-        val packetsReceived: Long
-    )
+    data class WireStats(val bytesSent: Long, val bytesReceived: Long, val packetsSent: Long, val packetsReceived: Long)
 
     private val lifecycle = QuicLifecycle(startedAtMs)
     private var bytesSent = 0L
@@ -41,12 +57,19 @@ internal class QuicConnectionCore(
 
     fun start(): Boolean = lifecycle.start()
 
-    fun receive(datagram: KQuicInboundDatagram, nowMs: Long): List<Effect> {
-        if (closing) return emptyList()
-        lifecycle.activity(nowMs)
-        bytesReceived += datagram.payload.size
-        packetsReceived++
-        return listOf(Effect.DatagramReady(datagram))
+    fun command(command: Command): List<Effect> = when (command) {
+        is Command.Receive -> receive(command.datagram, command.nowMs)
+        is Command.Deadline -> deadline(command.nowMs)
+        is Command.OpenChannel -> active {
+            Effect.OpenChannelRequested(command.config)
+        }
+        is Command.Send -> active {
+            Effect.SendRequested(command.label, command.payload, command.text, command.reservedBytes)
+        }
+        is Command.CloseChannel -> active {
+            Effect.CloseChannelRequested(command.label)
+        }
+        is Command.Close -> active { Effect.CloseRequested(command.reason) }
     }
 
     fun transmit(
@@ -77,12 +100,11 @@ internal class QuicConnectionCore(
     fun close(reason: String): List<Effect> =
         if (lifecycle.beginClose()) listOf(Effect.CloseRequested(reason)) else emptyList()
 
+    fun event(event: KQuicTransportEvent): Effect.EventReady = Effect.EventReady(event)
+
     fun nextDeadlineMs(): Long? {
         if (!started || closing) return null
-        return minOf(
-            lifecycle.lastActivityMs + idleTimeoutMs,
-            lifecycle.lastNetworkCheckAtMs + networkCheckIntervalMs
-        )
+        return minOf(lifecycle.lastActivityMs + idleTimeoutMs, lifecycle.lastNetworkCheckAtMs + networkCheckIntervalMs)
     }
 
     fun stats(): WireStats = WireStats(
@@ -91,4 +113,15 @@ internal class QuicConnectionCore(
         packetsSent = packetsSent,
         packetsReceived = packetsReceived
     )
+
+    private fun receive(datagram: KQuicInboundDatagram, nowMs: Long): List<Effect> {
+        if (closing) return emptyList()
+        lifecycle.activity(nowMs)
+        bytesReceived += datagram.payload.size
+        packetsReceived++
+        return listOf(Effect.DatagramReady(datagram))
+    }
+
+    private inline fun active(effect: () -> Effect): List<Effect> =
+        if (closing) emptyList() else listOf(effect())
 }

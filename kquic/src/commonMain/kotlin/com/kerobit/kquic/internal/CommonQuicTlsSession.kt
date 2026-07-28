@@ -90,17 +90,11 @@ internal class CommonQuicTlsSession(
                 requireLevel(level, QuicEncryptionLevel.INITIAL)
                 val serverHello = Tls13HelloCodec.decodeServerHello(message)
                 append(message)
-                val secrets = keySchedule.handshakeSecrets(
-                    keyAgreement.deriveSharedSecret(serverHello.keyShare),
-                    transcript
-                )
+                val secrets = keySchedule.handshakeSecrets(keyAgreement.deriveSharedSecret(serverHello.keyShare), transcript)
                 handshakeSecrets = secrets
                 events += QuicTlsEvent.SecretsAvailable(
                     QuicEncryptionLevel.HANDSHAKE,
-                    QuicTrafficSecrets(
-                        read = secrets.serverHandshakeTrafficSecret,
-                        write = secrets.clientHandshakeTrafficSecret
-                    )
+                    QuicTrafficSecrets(read = secrets.serverHandshakeTrafficSecret, write = secrets.clientHandshakeTrafficSecret)
                 )
                 state = State.CLIENT_WAIT_ENCRYPTED_EXTENSIONS
             }
@@ -132,15 +126,9 @@ internal class CommonQuicTlsSession(
             }
             State.CLIENT_WAIT_FINISHED -> {
                 requireLevel(level, QuicEncryptionLevel.HANDSHAKE)
-                verifyFinished(
-                    message,
-                    checkNotNull(handshakeSecrets).serverHandshakeTrafficSecret
-                )
+                verifyFinished(message, checkNotNull(handshakeSecrets).serverHandshakeTrafficSecret)
                 append(message)
-                val application = keySchedule.applicationSecrets(
-                    checkNotNull(handshakeSecrets).handshakeSecret,
-                    transcript
-                )
+                val application = keySchedule.applicationSecrets(checkNotNull(handshakeSecrets).handshakeSecret, transcript)
                 events += remoteIdentityEvent()
                 events += clientAuthenticationFlight()
                 events += QuicTlsEvent.SecretsAvailable(
@@ -169,27 +157,15 @@ internal class CommonQuicTlsSession(
                 append(message)
                 emitRemoteParameters(clientHello.transportParameters, events)
                 val serverHello = Tls13HelloCodec.encodeServerHello(
-                    Tls13ServerHello(
-                        random = crypto.secureRandom(32),
-                        keyShare = keyAgreement.publicKey
-                    )
+                    Tls13ServerHello(random = crypto.secureRandom(32), keyShare = keyAgreement.publicKey)
                 )
                 append(serverHello)
-                val secrets = keySchedule.handshakeSecrets(
-                    keyAgreement.deriveSharedSecret(clientHello.keyShare),
-                    transcript
-                )
+                val secrets = keySchedule.handshakeSecrets(keyAgreement.deriveSharedSecret(clientHello.keyShare), transcript)
                 handshakeSecrets = secrets
-                events += QuicTlsEvent.CryptoData(
-                    QuicEncryptionLevel.INITIAL,
-                    serverHello.encode()
-                )
+                events += QuicTlsEvent.CryptoData(QuicEncryptionLevel.INITIAL, serverHello.encode())
                 events += QuicTlsEvent.SecretsAvailable(
                     QuicEncryptionLevel.HANDSHAKE,
-                    QuicTrafficSecrets(
-                        read = secrets.clientHandshakeTrafficSecret,
-                        write = secrets.serverHandshakeTrafficSecret
-                    )
+                    QuicTrafficSecrets(read = secrets.clientHandshakeTrafficSecret, write = secrets.serverHandshakeTrafficSecret)
                 )
                 val flight = serverAuthenticationFlight()
                 events += QuicTlsEvent.CryptoData(QuicEncryptionLevel.HANDSHAKE, flight)
@@ -217,10 +193,7 @@ internal class CommonQuicTlsSession(
             }
             State.SERVER_WAIT_FINISHED -> {
                 requireLevel(level, QuicEncryptionLevel.HANDSHAKE)
-                verifyFinished(
-                    message,
-                    checkNotNull(handshakeSecrets).clientHandshakeTrafficSecret
-                )
+                verifyFinished(message, checkNotNull(handshakeSecrets).clientHandshakeTrafficSecret)
                 append(message)
                 events += remoteIdentityEvent()
                 events += QuicTlsEvent.HandshakeComplete
@@ -242,17 +215,11 @@ internal class CommonQuicTlsSession(
         ).also(::append)
         val signature = identity.signer.sign(
             KQuicSignatureAlgorithm.ECDSA_SECP256R1_SHA256,
-            Tls13AuthenticationCodec.certificateVerifyInput(
-                server = true,
-                transcriptHash = crypto.primitives.sha256(transcript)
-            )
+            Tls13AuthenticationCodec.certificateVerifyInput(server = true, transcriptHash = crypto.primitives.sha256(transcript))
         )
         messages += Tls13AuthenticationCodec.encodeCertificateVerify(signature).also(::append)
         val finished = Tls13AuthenticationCodec.encodeFinished(
-            keySchedule.finishedVerifyData(
-                checkNotNull(handshakeSecrets).serverHandshakeTrafficSecret,
-                transcript
-            )
+            keySchedule.finishedVerifyData(checkNotNull(handshakeSecrets).serverHandshakeTrafficSecret, transcript)
         )
         messages += finished.also(::append)
         return concatenate(messages)
@@ -268,23 +235,14 @@ internal class CommonQuicTlsSession(
         ).also(::append)
         val signature = identity.signer.sign(
             KQuicSignatureAlgorithm.ECDSA_SECP256R1_SHA256,
-            Tls13AuthenticationCodec.certificateVerifyInput(
-                server = false,
-                transcriptHash = crypto.primitives.sha256(transcript)
-            )
+            Tls13AuthenticationCodec.certificateVerifyInput(server = false, transcriptHash = crypto.primitives.sha256(transcript))
         )
         messages += Tls13AuthenticationCodec.encodeCertificateVerify(signature).also(::append)
         val finished = Tls13AuthenticationCodec.encodeFinished(
-            keySchedule.finishedVerifyData(
-                checkNotNull(handshakeSecrets).clientHandshakeTrafficSecret,
-                transcript
-            )
+            keySchedule.finishedVerifyData(checkNotNull(handshakeSecrets).clientHandshakeTrafficSecret, transcript)
         )
         messages += finished.also(::append)
-        return QuicTlsEvent.CryptoData(
-            QuicEncryptionLevel.HANDSHAKE,
-            concatenate(messages)
-        )
+        return QuicTlsEvent.CryptoData(QuicEncryptionLevel.HANDSHAKE, concatenate(messages))
     }
 
     private fun verifyCertificateVerify(message: TlsHandshakeMessage, server: Boolean) {
@@ -292,10 +250,7 @@ internal class CommonQuicTlsSession(
             ?: throw KQuicError.ProtocolViolation("CertificateVerify arrived before Certificate")
         val signature = Tls13AuthenticationCodec.decodeCertificateVerify(message).signature
         val spki = extractSubjectPublicKeyInfo(certificates.first())
-        val input = Tls13AuthenticationCodec.certificateVerifyInput(
-            server,
-            crypto.primitives.sha256(transcript)
-        )
+        val input = Tls13AuthenticationCodec.certificateVerifyInput(server, crypto.primitives.sha256(transcript))
         if (!crypto.verifyEcdsaP256Sha256(spki, input, signature)) {
             throw KQuicError.AuthenticationFailed("TLS CertificateVerify signature is invalid")
         }
@@ -313,10 +268,7 @@ internal class CommonQuicTlsSession(
         val certificates = checkNotNull(peerCertificates)
         val spki = extractSubjectPublicKeyInfo(certificates.first())
         return QuicTlsEvent.RemoteIdentityAvailable(
-            KQuicRemoteIdentity(
-                certificateChainDer = certificates,
-                publicKeySha256 = crypto.primitives.sha256(spki).toHex()
-            )
+            KQuicRemoteIdentity(certificateChainDer = certificates, publicKeySha256 = crypto.primitives.sha256(spki).toHex())
         )
     }
 
@@ -327,9 +279,7 @@ internal class CommonQuicTlsSession(
         if (remoteParametersEmitted) {
             throw KQuicError.ProtocolViolation("Duplicate remote QUIC transport parameters")
         }
-        events += QuicTlsEvent.TransportParametersAvailable(
-            QuicTransportParameters.decode(encoded).decoded()
-        )
+        events += QuicTlsEvent.TransportParametersAvailable(QuicTransportParameters.decode(encoded).decoded())
         remoteParametersEmitted = true
     }
 
@@ -351,9 +301,7 @@ internal class CommonQuicTlsSession(
 
     private fun requireLevel(actual: QuicEncryptionLevel, expected: QuicEncryptionLevel) {
         if (actual != expected) {
-            throw KQuicError.ProtocolViolation(
-                "TLS handshake message arrived at $actual; expected $expected"
-            )
+            throw KQuicError.ProtocolViolation("TLS handshake message arrived at $actual; expected $expected")
         }
     }
 

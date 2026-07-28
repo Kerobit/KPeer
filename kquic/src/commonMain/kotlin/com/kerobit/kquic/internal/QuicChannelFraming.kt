@@ -135,20 +135,14 @@ internal class QuicChannelFrameDecoder(
             0 -> {
                 val channelId = cursor.varInt()
                 val delivery = QuicChannelFrames.deliveryOf(cursor.byte())
-                val labelLength = cursor.varInt().checkedLength(
-                    maximum = limits.maxChannelLabelBytes,
-                    field = "channel label"
-                )
+                val labelLength = cursor.varInt().checkedLength(maximum = limits.maxChannelLabelBytes, field = "channel label")
                 if (labelLength == 0) {
                     throw KQuicError.ProtocolViolation("Channel label cannot be empty")
                 }
                 val label = cursor.bytes(labelLength).decodeUtf8("channel label")
                 QuicChannelMessage.Open(channelId, label, delivery)
             }
-            1 -> QuicChannelMessage.Bytes(
-                channelId = cursor.varInt(),
-                payload = cursor.bytes(cursor.payloadLength())
-            )
+            1 -> QuicChannelMessage.Bytes(channelId = cursor.varInt(), payload = cursor.bytes(cursor.payloadLength()))
             2 -> QuicChannelMessage.Text(
                 channelId = cursor.varInt(),
                 text = cursor.bytes(cursor.payloadLength()).decodeUtf8("text message")

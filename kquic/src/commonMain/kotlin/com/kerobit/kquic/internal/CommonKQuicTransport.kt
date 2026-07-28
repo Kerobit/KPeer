@@ -64,12 +64,7 @@ private class CommonKQuicTransport(
         remoteCredentials: KQuicConnectivityCredentials
     ): KQuicRemoteIdentity {
         check(!closed) { "KQuic transport is closed" }
-        val path = candidateTransport.validate(
-            candidatePair,
-            role,
-            localCredentials,
-            remoteCredentials
-        )
+        val path = candidateTransport.validate(candidatePair, role, localCredentials, remoteCredentials)
         val connectionActor = try {
             CommonQuicConnectionActor(
                 parentScope = scope,

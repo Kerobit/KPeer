@@ -26,10 +26,7 @@ internal class QuicHandshake(
             config.limits.maxBufferedCryptoBytes.toULong()
         )
     )
-    private val cryptoSendOffset = mutableMapOf(
-        QuicEncryptionLevel.INITIAL to 0uL,
-        QuicEncryptionLevel.HANDSHAKE to 0uL
-    )
+    private val cryptoSendOffset = mutableMapOf(QuicEncryptionLevel.INITIAL to 0uL, QuicEncryptionLevel.HANDSHAKE to 0uL)
 
     var remoteIdentity: KQuicRemoteIdentity? = null
         private set

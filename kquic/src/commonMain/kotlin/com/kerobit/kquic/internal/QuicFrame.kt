@@ -121,9 +121,7 @@ internal object QuicFrames {
                     throw KQuicError.ProtocolViolation("NEW_CONNECTION_ID has invalid ID length")
                 }
                 if (frame.statelessResetToken.size != 16) {
-                    throw KQuicError.ProtocolViolation(
-                        "Stateless reset token must contain 16 bytes"
-                    )
+                    throw KQuicError.ProtocolViolation("Stateless reset token must contain 16 bytes")
                 }
                 varInt(NEW_CONNECTION_ID)
                 varInt(frame.sequence)
@@ -200,9 +198,7 @@ internal object QuicFrames {
                     }
                     val connectionIdLength = reader.byte()
                     if (connectionIdLength !in 1..20) {
-                        throw KQuicError.ProtocolViolation(
-                            "NEW_CONNECTION_ID has invalid ID length"
-                        )
+                        throw KQuicError.ProtocolViolation("NEW_CONNECTION_ID has invalid ID length")
                     }
                     frames += QuicFrame.NewConnectionId(
                         sequence = sequence,
@@ -213,12 +209,8 @@ internal object QuicFrames {
                 }
                 RETIRE_CONNECTION_ID ->
                     frames += QuicFrame.RetireConnectionId(reader.varInt())
-                DATAGRAM_WITHOUT_LENGTH -> frames += QuicFrame.Datagram(
-                    reader.readBytes(reader.remaining)
-                )
-                DATAGRAM_WITH_LENGTH -> frames += QuicFrame.Datagram(
-                    reader.readBytes(reader.varInt().toLength())
-                )
+                DATAGRAM_WITHOUT_LENGTH -> frames += QuicFrame.Datagram(reader.readBytes(reader.remaining))
+                DATAGRAM_WITH_LENGTH -> frames += QuicFrame.Datagram(reader.readBytes(reader.varInt().toLength()))
                 CONNECTION_CLOSE_TRANSPORT -> {
                     val errorCode = reader.varInt()
                     val frameType = reader.varInt()

@@ -36,29 +36,17 @@ internal class CommonQuicConnectionActor(
     private val emitBufferedAmountDrained: (String, Int) -> Unit = { _, _ -> },
     private val logger: KQuicLogger = NoOpKQuicLogger
 ) {
-    private sealed interface Command {
-        data class Inbound(val datagram: KQuicInboundDatagram) : Command
-        data class OpenChannel(val config: KQuicChannelConfig) : Command
-        data class Send(
-            val label: String,
-            val payload: ByteArray,
-            val text: Boolean,
-            val reservedBytes: Int
-        ) : Command
-        data class CloseChannel(val label: String) : Command
+    private sealed interface ActorCommand {
+        data class Core(val command: QuicConnectionCore.Command) : ActorCommand
         data class GetStats(
             val reply: CompletableDeferred<KQuicTransportStats>
-        ) : Command
-        data class Fatal(val error: Throwable) : Command
-        data object Tick : Command
-        data object Close : Command
+        ) : ActorCommand
+        data class Fatal(val error: Throwable) : ActorCommand
     }
 
     private val scopeJob = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(parentScope.coroutineContext + scopeJob)
-    private val commands = Channel<Command>(
-        capacity = config.limits.maxBufferedPackets.coerceIn(16, 1_024)
-    )
+    private val commands = Channel<ActorCommand>(capacity = config.limits.maxBufferedPackets.coerceIn(16, 1_024))
     private val connected = CompletableDeferred<KQuicRemoteIdentity>()
     private val crypto = platformRuntime.crypto.packetProtection
     private val handshakeCrypto = platformRuntime.crypto.handshakeCrypto
@@ -96,9 +84,15 @@ internal class CommonQuicConnectionActor(
         socket = socket,
         tickIntervalMs = TICK_INTERVAL_MS,
         isClosing = { core.closing },
-        onInbound = { commands.send(Command.Inbound(it)) },
-        onTick = { commands.send(Command.Tick) },
-        onFailure = { commands.trySend(Command.Fatal(it)) }
+        onInbound = {
+            if (!StunProtocol.isStun(it.payload) && it.source == remoteAddress) {
+                commands.send(ActorCommand.Core(QuicConnectionCore.Command.Receive(it, nowMs())))
+            }
+        },
+        onTick = {
+            commands.send(ActorCommand.Core(QuicConnectionCore.Command.Deadline(nowMs())))
+        },
+        onFailure = { commands.trySend(ActorCommand.Fatal(it)) }
     )
     private val initialHostAddresses = platformRuntime.network.hostAddresses().sorted()
 
@@ -112,7 +106,7 @@ internal class CommonQuicConnectionActor(
             enqueue(QuicEncryptionLevel.ONE_RTT, frame, required)
         },
         bufferedAmountDrained = emitBufferedAmountDrained,
-        emitEvent = emitEvent
+        emitEvent = ::emitCoreEvent
     )
 
     suspend fun connect(): KQuicRemoteIdentity {
@@ -124,30 +118,29 @@ internal class CommonQuicConnectionActor(
         if (config.delivery == KQuicDelivery.UNRELIABLE &&
             handshake.remoteParameters?.maxDatagramFrameSize == null
         ) {
-            throw KQuicError.UnsupportedDelivery(
-                "The remote peer did not negotiate QUIC DATAGRAM"
-            )
+            throw KQuicError.UnsupportedDelivery("The remote peer did not negotiate QUIC DATAGRAM")
         }
-        return commands.trySend(Command.OpenChannel(config)).isSuccess
+        return commands.trySend(
+            ActorCommand.Core(QuicConnectionCore.Command.OpenChannel(config))
+        ).isSuccess
     }
 
     fun send(label: String, payload: ByteArray, text: Boolean): Boolean {
         val reservation = channelManager.reserve(payload.size) ?: return false
-        return commands.trySend(
-            Command.Send(label, payload.copyOf(), text, reservation)
-        ).isSuccess.also { accepted ->
+        val command = QuicConnectionCore.Command.Send(label, payload.copyOf(), text, reservation)
+        return commands.trySend(ActorCommand.Core(command)).isSuccess.also { accepted ->
             if (!accepted) channelManager.release(reservation)
         }
     }
 
     fun closeChannel(label: String) {
-        commands.trySend(Command.CloseChannel(label))
+        commands.trySend(ActorCommand.Core(QuicConnectionCore.Command.CloseChannel(label)))
     }
 
     suspend fun getStats(): KQuicTransportStats {
         if (closing) return currentStats()
         val reply = CompletableDeferred<KQuicTransportStats>()
-        if (commands.trySend(Command.GetStats(reply)).isFailure) return currentStats()
+        if (commands.trySend(ActorCommand.GetStats(reply)).isFailure) return currentStats()
         return select {
             reply.onAwait { it }
             scopeJob.onJoin { currentStats() }
@@ -155,7 +148,8 @@ internal class CommonQuicConnectionActor(
     }
 
     fun close() {
-        if (commands.trySend(Command.Close).isFailure) {
+        val command = ActorCommand.Core(QuicConnectionCore.Command.Close("application_close"))
+        if (commands.trySend(command).isFailure) {
             ioDriver.close()
             scopeJob.cancel()
         }
@@ -170,7 +164,7 @@ internal class CommonQuicConnectionActor(
         scope.launch { runActor() }
         ioDriver.start()
         if (endpointRole == QuicEndpointRole.CLIENT) {
-            commands.trySend(Command.Tick)
+            commands.trySend(ActorCommand.Core(QuicConnectionCore.Command.Deadline(nowMs())))
         }
     }
 
@@ -179,17 +173,9 @@ internal class CommonQuicConnectionActor(
             if (endpointRole == QuicEndpointRole.CLIENT) initializeClient()
             for (command in commands) {
                 when (command) {
-                    is Command.Inbound -> handleInbound(command.datagram)
-                    is Command.OpenChannel -> handleOpenChannel(command.config)
-                    is Command.Send -> handleSend(command)
-                    is Command.CloseChannel -> handleCloseChannel(command.label)
-                    is Command.GetStats -> command.reply.complete(currentStats())
-                    is Command.Fatal -> throw command.error
-                    Command.Tick -> handleTick()
-                    Command.Close -> {
-                        gracefulClose("application_close")
-                        return
-                    }
+                    is ActorCommand.Core -> applyCoreCommand(command.command)
+                    is ActorCommand.GetStats -> command.reply.complete(currentStats())
+                    is ActorCommand.Fatal -> throw command.error
                 }
                 flush()
                 if (closing) return
@@ -206,7 +192,7 @@ internal class CommonQuicConnectionActor(
                     "bytesSent=${core.stats().bytesSent} bytesReceived=${core.stats().bytesReceived}"
             )
             if (!connected.isCompleted) connected.completeExceptionally(mapped)
-            emitEvent(KQuicTransportEvent.Failed(mapped))
+            emitCoreEvent(KQuicTransportEvent.Failed(mapped))
         } finally {
             core.close("actor_terminated")
             handshake.close()
@@ -254,15 +240,42 @@ internal class CommonQuicConnectionActor(
         }
     }
 
-    private suspend fun handleInbound(datagram: KQuicInboundDatagram) {
-        if (closing || StunProtocol.isStun(datagram.payload)) return
-        if (datagram.source != remoteAddress) return
-        if (core.receive(datagram, nowMs()).isEmpty()) return
+    private suspend fun applyCoreCommand(command: QuicConnectionCore.Command) {
+        if (command is QuicConnectionCore.Command.Deadline) {
+            handleTick(command.nowMs)
+            return
+        }
+        core.command(command).forEach { applyCoreEffect(it) }
+    }
 
-        val invariant = QuicInvariantHeaders.decode(
-            datagram.payload,
-            shortHeaderDestinationIdLength = localConnectionId.size
-        )
+    private suspend fun applyCoreEffect(effect: QuicConnectionCore.Effect) {
+        when (effect) {
+            is QuicConnectionCore.Effect.DatagramReady -> handleInbound(effect.datagram)
+            is QuicConnectionCore.Effect.OpenChannelRequested ->
+                handleOpenChannel(effect.config)
+            is QuicConnectionCore.Effect.SendRequested -> handleSend(effect)
+            is QuicConnectionCore.Effect.CloseChannelRequested ->
+                handleCloseChannel(effect.label)
+            is QuicConnectionCore.Effect.CloseRequested -> gracefulClose(effect.reason)
+            is QuicConnectionCore.Effect.EventReady -> emitEvent(effect.event)
+            QuicConnectionCore.Effect.IdleTimeout ->
+                throw KQuicError.ConnectionTimedOut(config.idleTimeoutMs)
+            QuicConnectionCore.Effect.CheckNetwork -> {
+                if (platformRuntime.network.hostAddresses().sorted() != initialHostAddresses) {
+                    gracefulClose("NETWORK_CHANGED")
+                }
+            }
+            is QuicConnectionCore.Effect.DatagramToSend ->
+                ioDriver.send(effect.destination, effect.payload)
+        }
+    }
+
+    private suspend fun emitCoreEvent(event: KQuicTransportEvent) {
+        applyCoreEffect(core.event(event))
+    }
+
+    private suspend fun handleInbound(datagram: KQuicInboundDatagram) {
+        val invariant = QuicInvariantHeaders.decode(datagram.payload, shortHeaderDestinationIdLength = localConnectionId.size)
         if (endpointRole == QuicEndpointRole.SERVER && !handshake.initialized) {
             logger.debug("Received first QUIC Initial datagram from ${datagram.source}")
             val long = invariant as? QuicInvariantHeader.Long
@@ -287,11 +300,7 @@ internal class CommonQuicConnectionActor(
         val packetSpace = packetSpaces[level]
         val keys = packetSpace.protection?.read ?: return
         val opened = when (invariant) {
-            is QuicInvariantHeader.Long -> packetProtection.openLong(
-                datagram.payload,
-                packetSpace.largestReceived,
-                keys
-            )
+            is QuicInvariantHeader.Long -> packetProtection.openLong(datagram.payload, packetSpace.largestReceived, keys)
             is QuicInvariantHeader.Short -> packetProtection.openShort(
                 datagram.payload,
                 localConnectionId.size,
@@ -302,16 +311,9 @@ internal class CommonQuicConnectionActor(
         val frames = QuicFrames.decodeAll(opened.plaintext)
         val ackEliciting = frames.any { it.isAckEliciting() }
         val now = nowMs()
-        val isNew = packetSpace.ackTracker.onPacketReceived(
-            opened.packetNumber,
-            now,
-            ackEliciting
-        )
+        val isNew = packetSpace.ackTracker.onPacketReceived(opened.packetNumber, now, ackEliciting)
         if (!isNew) return
-        packetSpace.largestReceived = maxOf(
-            packetSpace.largestReceived ?: 0uL,
-            opened.packetNumber
-        )
+        packetSpace.largestReceived = maxOf(packetSpace.largestReceived ?: 0uL, opened.packetNumber)
         frames.forEach { processFrame(level, it) }
         val tracker = packetSpace.ackTracker
         if (tracker.shouldAcknowledge()) {
@@ -337,7 +339,7 @@ internal class CommonQuicConnectionActor(
             is QuicFrame.ResetStream -> channelManager.streamReset(frame.streamId)
             is QuicFrame.StopSending -> channelManager.streamReset(frame.streamId)
             is QuicFrame.ConnectionClose -> {
-                emitEvent(KQuicTransportEvent.Disconnected(frame.reason))
+                emitCoreEvent(KQuicTransportEvent.Disconnected(frame.reason))
                 core.close(frame.reason)
                 scopeJob.cancel()
             }
@@ -366,11 +368,7 @@ internal class CommonQuicConnectionActor(
             handshake.remoteParameters?.ackDelayExponent?.toInt()
                 ?: LOCAL_ACK_DELAY_EXPONENT
         val delayMs = ((frame.ackDelay shl exponent) / 1_000uL).toLong()
-        val result = packetSpaces[level].recovery.onAckReceivedDetailed(
-            frame.ranges,
-            nowMs(),
-            delayMs
-        )
+        val result = packetSpaces[level].recovery.onAckReceivedDetailed(frame.ranges, nowMs(), delayMs)
         result.framesToRetransmit.forEach {
             enqueue(level, it, required = false)
         }
@@ -425,16 +423,12 @@ internal class CommonQuicConnectionActor(
         if (expectedRemoteId != null &&
             !parameters.initialSourceConnectionId.contentEquals(expectedRemoteId)
         ) {
-            throw KQuicError.ProtocolViolation(
-                "Remote initial_source_connection_id does not match packet headers"
-            )
+            throw KQuicError.ProtocolViolation("Remote initial_source_connection_id does not match packet headers")
         }
         if (endpointRole == QuicEndpointRole.CLIENT) {
             val expectedOriginal = checkNotNull(originalDestinationConnectionId)
             if (parameters.originalDestinationConnectionId?.contentEquals(expectedOriginal) != true) {
-                throw KQuicError.ProtocolViolation(
-                    "Server original_destination_connection_id does not match"
-                )
+                throw KQuicError.ProtocolViolation("Server original_destination_connection_id does not match")
             }
         }
         channelManager.applyRemoteParameters(parameters)
@@ -445,23 +439,17 @@ internal class CommonQuicConnectionActor(
         channelManager.open(channelConfig)
     }
 
-    private fun handleSend(command: Command.Send) {
+    private fun handleSend(command: QuicConnectionCore.Effect.SendRequested) {
         ensureApplicationReady()
-        channelManager.send(
-            command.label,
-            command.payload,
-            command.text,
-            command.reservedBytes
-        )
+        channelManager.send(command.label, command.payload, command.text, command.reservedBytes)
     }
 
     private fun handleCloseChannel(label: String) {
         channelManager.close(label)
     }
 
-    private suspend fun handleTick() {
+    private suspend fun handleTick(now: Long) {
         if (closing) return
-        val now = nowMs()
         packetSpaces.values.forEach { packetSpace ->
             val tracker = packetSpace.ackTracker
             if (tracker.hasPendingAck && now >= tracker.ackDeadlineMs) {
@@ -484,21 +472,8 @@ internal class CommonQuicConnectionActor(
                 recoverySpace.onPtoExpired()
             }
         }
-        core.deadline(now).forEach { effect ->
-            when (effect) {
-                QuicConnectionCore.Effect.IdleTimeout ->
-                    throw KQuicError.ConnectionTimedOut(config.idleTimeoutMs)
-                QuicConnectionCore.Effect.CheckNetwork -> {
-                    if (platformRuntime.network.hostAddresses().sorted() != initialHostAddresses) {
-                        gracefulClose("NETWORK_CHANGED")
-                        return
-                    }
-                }
-                is QuicConnectionCore.Effect.DatagramReady,
-                is QuicConnectionCore.Effect.DatagramToSend,
-                is QuicConnectionCore.Effect.CloseRequested -> Unit
-            }
-        }
+        core.command(QuicConnectionCore.Command.Deadline(now))
+            .forEach { applyCoreEffect(it) }
         channelManager.drain()
     }
 
@@ -532,9 +507,7 @@ internal class CommonQuicConnectionActor(
                 val packet = when (level) {
                     QuicEncryptionLevel.INITIAL -> packetProtection.sealLong(
                         type = QuicLongPacketType.INITIAL,
-                        destinationConnectionId = checkNotNull(
-                            remoteConnectionId ?: originalDestinationConnectionId
-                        ),
+                        destinationConnectionId = checkNotNull(remoteConnectionId ?: originalDestinationConnectionId),
                         sourceConnectionId = localConnectionId,
                         packetNumber = packetNumber,
                         packetNumberLength = PACKET_NUMBER_LENGTH,
@@ -561,7 +534,7 @@ internal class CommonQuicConnectionActor(
                     )
                 }
                 val outgoing = checkNotNull(core.transmit(remoteAddress, packet, nowMs()))
-                ioDriver.send(outgoing.destination, outgoing.payload)
+                applyCoreEffect(outgoing)
                 recoverySpace.onPacketSent(
                     number = packetNumber,
                     sentAtMs = outgoing.sentAtMs,
@@ -641,9 +614,7 @@ internal class CommonQuicConnectionActor(
                 "packetsReceived=${wireStats.packetsReceived}"
         )
         connected.complete(
-            handshake.remoteIdentity ?: throw KQuicError.AuthenticationFailed(
-                "TLS completed without a remote identity"
-            )
+            handshake.remoteIdentity ?: throw KQuicError.AuthenticationFailed("TLS completed without a remote identity")
         )
     }
 
@@ -656,18 +627,14 @@ internal class CommonQuicConnectionActor(
     private suspend fun gracefulClose(reason: String) {
         if (closing) return
         if (packetSpaces[QuicEncryptionLevel.ONE_RTT].protection != null) {
-            enqueue(
-                QuicEncryptionLevel.ONE_RTT,
-                QuicFrame.ConnectionClose(0uL, 0uL, reason),
-                required = false
-            )
+            enqueue(QuicEncryptionLevel.ONE_RTT, QuicFrame.ConnectionClose(0uL, 0uL, reason), required = false)
             flush()
         }
         core.close(reason)
         if (!connected.isCompleted) {
             connected.completeExceptionally(KQuicError.TransportFailure(reason))
         }
-        emitEvent(KQuicTransportEvent.Disconnected(reason))
+        emitCoreEvent(KQuicTransportEvent.Disconnected(reason))
     }
 
     private fun currentStats(): KQuicTransportStats {

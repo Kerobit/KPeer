@@ -4,11 +4,7 @@ import com.kerobit.kquic.KQuicError
 
 internal enum class QuicInitialRole { CLIENT, SERVER }
 
-internal data class QuicPacketProtectionKeys(
-    val key: ByteArray,
-    val iv: ByteArray,
-    val headerProtectionKey: ByteArray
-)
+internal data class QuicPacketProtectionKeys(val key: ByteArray, val iv: ByteArray, val headerProtectionKey: ByteArray)
 
 /** Cryptographic operations supplied by reviewed platform providers, never implemented here. */
 internal interface Tls13HashPrimitives {
@@ -41,11 +37,7 @@ internal class QuicInitialCrypto(
         return QuicPacketProtectionKeys(
             key = hkdfExpandLabel(directionalSecret, "quic key", AES_128_KEY_LENGTH),
             iv = hkdfExpandLabel(directionalSecret, "quic iv", QUIC_IV_LENGTH),
-            headerProtectionKey = hkdfExpandLabel(
-                directionalSecret,
-                "quic hp",
-                AES_128_KEY_LENGTH
-            )
+            headerProtectionKey = hkdfExpandLabel(directionalSecret, "quic hp", AES_128_KEY_LENGTH)
         )
     }
 

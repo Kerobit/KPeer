@@ -70,10 +70,7 @@ internal class QuicPacketProtection(
             keys
         )
         val header = QuicLongHeaders.decode(unprotected)
-        val mask = crypto.headerProtectionMask(
-            keys,
-            QuicHeaderProtection.sample(unprotected, header.packetNumberOffset)
-        )
+        val mask = crypto.headerProtectionMask(keys, QuicHeaderProtection.sample(unprotected, header.packetNumberOffset))
         return applyHeaderProtection(unprotected, header.packetNumberOffset, true, mask)
     }
 
@@ -99,10 +96,7 @@ internal class QuicPacketProtection(
         val ciphertext = crypto.seal(keys, packetNumber, header, padded)
         val unprotected = header + ciphertext
         val packetNumberOffset = 1 + destinationConnectionId.size
-        val mask = crypto.headerProtectionMask(
-            keys,
-            QuicHeaderProtection.sample(unprotected, packetNumberOffset)
-        )
+        val mask = crypto.headerProtectionMask(keys, QuicHeaderProtection.sample(unprotected, packetNumberOffset))
         return applyHeaderProtection(unprotected, packetNumberOffset, false, mask)
     }
 
@@ -128,25 +122,12 @@ internal class QuicPacketProtection(
             mask
         )
         val header = QuicLongHeaders.decode(unprotected)
-        val truncated = decodePacketNumber(
-            unprotected,
-            header.packetNumberOffset,
-            header.packetNumberLength
-        )
-        val packetNumber = QuicPacketNumbers.decode(
-            largestReceived,
-            truncated,
-            header.packetNumberLength
-        )
+        val truncated = decodePacketNumber(unprotected, header.packetNumberOffset, header.packetNumberLength)
+        val packetNumber = QuicPacketNumbers.decode(largestReceived, truncated, header.packetNumberLength)
         val payloadEnd = header.packetNumberOffset + header.payloadLength.toInt()
         val payloadStart = header.packetNumberOffset + header.packetNumberLength
         val aad = unprotected.copyOfRange(0, payloadStart)
-        val plaintext = crypto.open(
-            keys,
-            packetNumber,
-            aad,
-            unprotected.copyOfRange(payloadStart, payloadEnd)
-        )
+        val plaintext = crypto.open(keys, packetNumber, aad, unprotected.copyOfRange(payloadStart, payloadEnd))
         return QuicOpenedPacket(
             packetNumber = packetNumber,
             encryptionLevel = when (header.type) {
@@ -173,27 +154,11 @@ internal class QuicPacketProtection(
             destinationConnectionIdLength
         ) as? QuicInvariantHeader.Short
             ?: throw KQuicError.ProtocolViolation("Expected short-header packet")
-        val mask = crypto.headerProtectionMask(
-            keys,
-            QuicHeaderProtection.sample(protectedPacket, invariant.packetNumberOffset)
-        )
-        val unprotected = QuicHeaderProtection.remove(
-            protectedPacket,
-            invariant.packetNumberOffset,
-            longHeader = false,
-            mask
-        )
+        val mask = crypto.headerProtectionMask(keys, QuicHeaderProtection.sample(protectedPacket, invariant.packetNumberOffset))
+        val unprotected = QuicHeaderProtection.remove(protectedPacket, invariant.packetNumberOffset, longHeader = false, mask)
         val packetNumberLength = (unprotected[0].toInt() and 0x03) + 1
-        val truncated = decodePacketNumber(
-            unprotected,
-            invariant.packetNumberOffset,
-            packetNumberLength
-        )
-        val packetNumber = QuicPacketNumbers.decode(
-            largestReceived,
-            truncated,
-            packetNumberLength
-        )
+        val truncated = decodePacketNumber(unprotected, invariant.packetNumberOffset, packetNumberLength)
+        val packetNumber = QuicPacketNumbers.decode(largestReceived, truncated, packetNumberLength)
         val payloadStart = invariant.packetNumberOffset + packetNumberLength
         return QuicOpenedPacket(
             packetNumber = packetNumber,

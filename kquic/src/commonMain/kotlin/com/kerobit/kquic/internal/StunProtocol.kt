@@ -48,18 +48,9 @@ internal object StunProtocol {
             ),
             StunAttribute(PRIORITY, u32(priority))
         )
-        attributes += StunAttribute(
-            if (controlling) ICE_CONTROLLING else ICE_CONTROLLED,
-            u64(tieBreaker)
-        )
+        attributes += StunAttribute(if (controlling) ICE_CONTROLLING else ICE_CONTROLLED, u64(tieBreaker))
         if (useCandidate) attributes += StunAttribute(USE_CANDIDATE, ByteArray(0))
-        return encode(
-            BINDING_REQUEST,
-            transactionId,
-            attributes,
-            remote.password.encodeToByteArray(),
-            hmacSha256
-        )
+        return encode(BINDING_REQUEST, transactionId, attributes, remote.password.encodeToByteArray(), hmacSha256)
     }
 
     fun bindingSuccessResponse(
@@ -112,15 +103,8 @@ internal object StunProtocol {
                     false
                 } else {
                     val covered = bytes.copyOfRange(0, attributeStart)
-                    writeU16(
-                        covered,
-                        2,
-                        attributeStart + 4 + value.size - HEADER_SIZE
-                    )
-                    constantTimeEquals(
-                        hmac(password.encodeToByteArray(), covered),
-                        value
-                    )
+                    writeU16(covered, 2, attributeStart + 4 + value.size - HEADER_SIZE)
+                    constantTimeEquals(hmac(password.encodeToByteArray(), covered), value)
                 }
             }
         }
@@ -202,10 +186,7 @@ internal object StunProtocol {
         val raw = ByteArray(length) { index ->
             (value[4 + index].toInt() xor mask[index].toInt()).toByte()
         }
-        return KQuicSocketAddress(
-            host = formatIpAddress(raw),
-            port = readU16(value, 2) xor (MAGIC_COOKIE ushr 16)
-        )
+        return KQuicSocketAddress(host = formatIpAddress(raw), port = readU16(value, 2) xor (MAGIC_COOKIE ushr 16))
     }
 
     private fun parseIpAddress(host: String): ByteArray {

@@ -7,11 +7,7 @@ internal enum class QuicEndpointRole {
     SERVER
 }
 
-internal data class QuicReceivedStreamData(
-    val streamId: ULong,
-    val bytes: ByteArray,
-    val complete: Boolean
-)
+internal data class QuicReceivedStreamData(val streamId: ULong, val bytes: ByteArray, val complete: Boolean)
 
 /**
  * Owns stream-ID allocation, receive reassembly and stream-count/flow-control enforcement.
@@ -60,10 +56,7 @@ internal class QuicStreamManager(
         validatePeerCanSend(frame.streamId)
         val stream = receiveStreams.getOrPut(frame.streamId) {
             validateNewRemoteStream(frame.streamId)
-            QuicOffsetReassembler(
-                maxBufferedBytes = maximumBufferedBytesPerStream,
-                maxOffset = localMaxStreamData
-            )
+            QuicOffsetReassembler(maxBufferedBytes = maximumBufferedBytesPerStream, maxOffset = localMaxStreamData)
         }
         val bytes = stream.add(frame.offset, frame.data, frame.fin)
         return QuicReceivedStreamData(frame.streamId, bytes, stream.complete)
@@ -73,10 +66,7 @@ internal class QuicStreamManager(
         validatePeerCanSend(frame.streamId)
         val stream = receiveStreams.getOrPut(frame.streamId) {
             validateNewRemoteStream(frame.streamId)
-            QuicOffsetReassembler(
-                maxBufferedBytes = maximumBufferedBytesPerStream,
-                maxOffset = localMaxStreamData
-            )
+            QuicOffsetReassembler(maxBufferedBytes = maximumBufferedBytesPerStream, maxOffset = localMaxStreamData)
         }
         stream.add(frame.finalSize, ByteArray(0), fin = true)
     }
@@ -89,9 +79,7 @@ internal class QuicStreamManager(
         val locallyInitiated = (streamId and 0x01uL) == role.initiatorBit
         val unidirectional = (streamId and 0x02uL) != 0uL
         if (locallyInitiated && unidirectional) {
-            throw KQuicError.ProtocolViolation(
-                "Peer sent STREAM data on a locally initiated unidirectional stream"
-            )
+            throw KQuicError.ProtocolViolation("Peer sent STREAM data on a locally initiated unidirectional stream")
         }
     }
 

@@ -16,6 +16,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalKQuicApi::class)
@@ -137,6 +138,10 @@ class KQuicPeerTransportTest {
         peer.close()
         assertEquals(KQuicChannelState.CLOSED, first.currentState)
         assertEquals(KQuicChannelState.CLOSED, second.currentState)
+        assertFailsWith<KQuicError.InvalidChannel> {
+            peer.createChannel(KQuicChannelConfig("after-close"))
+        }
+        Unit
     }
 
     @Test

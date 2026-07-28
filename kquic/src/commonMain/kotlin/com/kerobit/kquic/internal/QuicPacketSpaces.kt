@@ -1,14 +1,8 @@
 package com.kerobit.kquic.internal
 
-internal data class QuicProtectionPair(
-    val read: QuicPacketProtectionKeys,
-    val write: QuicPacketProtectionKeys
-)
+internal data class QuicProtectionPair(val read: QuicPacketProtectionKeys, val write: QuicPacketProtectionKeys)
 
-internal data class QuicQueuedFrame(
-    val frame: QuicFrame,
-    val estimatedBytes: Int
-)
+internal data class QuicQueuedFrame(val frame: QuicFrame, val estimatedBytes: Int)
 
 /** All mutable state that belongs to one QUIC packet-number space. */
 internal class QuicPacketSpaceState internal constructor(

@@ -57,11 +57,7 @@ internal object AppleKQuicDatagramSocketFactory : KQuicDatagramSocketFactory {
     override suspend fun bind(localAddress: KQuicSocketAddress): KQuicDatagramSocket =
         withContext(Dispatchers.Default) {
             val bound = resolve(localAddress, passive = true) { address ->
-                val descriptor = socket(
-                    address.ai_family,
-                    address.ai_socktype,
-                    address.ai_protocol
-                )
+                val descriptor = socket(address.ai_family, address.ai_socktype, address.ai_protocol)
                 if (descriptor < 0) return@resolve null
                 if (bind(descriptor, address.ai_addr, address.ai_addrlen) != 0) {
                     close(descriptor)
@@ -91,14 +87,7 @@ private class AppleKQuicDatagramSocket(
             check(!closed) { "UDP socket is closed" }
             val sent = resolve(destination, passive = false) { address ->
                 payload.usePinned { pinned ->
-                    sendto(
-                        descriptor,
-                        pinned.addressOf(0),
-                        payload.size.convert(),
-                        0,
-                        address.ai_addr,
-                        address.ai_addrlen
-                    )
+                    sendto(descriptor, pinned.addressOf(0), payload.size.convert(), 0, address.ai_addr, address.ai_addrlen)
                 }
             } ?: -1
             if (sent != payload.size.toLong()) {
@@ -167,12 +156,7 @@ private inline fun <T> resolve(
     hints.ai_protocol = IPPROTO_UDP
     hints.ai_flags = if (passive) platform.posix.AI_PASSIVE else 0
     val result = alloc<CPointerVar<addrinfo>>()
-    val status = getaddrinfo(
-        address.host,
-        address.port.toString(),
-        hints.ptr,
-        result.ptr
-    )
+    val status = getaddrinfo(address.host, address.port.toString(), hints.ptr, result.ptr)
     if (status != 0) return@memScoped null
     try {
         var current: CPointer<addrinfo>? = result.value

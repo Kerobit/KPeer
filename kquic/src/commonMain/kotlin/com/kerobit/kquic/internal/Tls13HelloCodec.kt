@@ -2,20 +2,11 @@ package com.kerobit.kquic.internal
 
 import com.kerobit.kquic.KQuicError
 
-internal data class Tls13ClientHello(
-    val random: ByteArray,
-    val keyShare: ByteArray,
-    val transportParameters: ByteArray
-)
+internal data class Tls13ClientHello(val random: ByteArray, val keyShare: ByteArray, val transportParameters: ByteArray)
 
-internal data class Tls13ServerHello(
-    val random: ByteArray,
-    val keyShare: ByteArray
-)
+internal data class Tls13ServerHello(val random: ByteArray, val keyShare: ByteArray)
 
-internal data class Tls13EncryptedExtensions(
-    val transportParameters: ByteArray
-)
+internal data class Tls13EncryptedExtensions(val transportParameters: ByteArray)
 
 /**
  * Strict codec for KQuic's deliberately narrow TLS profile.
@@ -93,11 +84,7 @@ internal object Tls13HelloCodec {
         }
         val key = p256 ?: fail("ClientHello does not contain a P-256 key share")
         if (key.size != 65 || key[0] != 0x04.toByte()) fail("Invalid P-256 key share")
-        return Tls13ClientHello(
-            random,
-            key,
-            required(extensions, EXT_QUIC_TRANSPORT_PARAMETERS, "QUIC transport parameters")
-        )
+        return Tls13ClientHello(random, key, required(extensions, EXT_QUIC_TRANSPORT_PARAMETERS, "QUIC transport parameters"))
     }
 
     fun encodeServerHello(value: Tls13ServerHello): TlsHandshakeMessage {
@@ -150,11 +137,7 @@ internal object Tls13HelloCodec {
     fun encodeEncryptedExtensions(value: Tls13EncryptedExtensions): TlsHandshakeMessage =
         TlsHandshakeMessage(
             TlsHandshakeType.ENCRYPTED_EXTENSIONS,
-            vector16(
-                encodeExtensions(
-                    EXT_ALPN to alpnExtension(),
-                    EXT_QUIC_TRANSPORT_PARAMETERS to value.transportParameters
-                )
+            vector16(encodeExtensions(EXT_ALPN to alpnExtension(), EXT_QUIC_TRANSPORT_PARAMETERS to value.transportParameters)
             )
         )
 
@@ -164,9 +147,7 @@ internal object Tls13HelloCodec {
         val extensions = decodeExtensions(reader.vector16(MAX_TLS_VECTOR_SIZE))
         reader.requireEnd("EncryptedExtensions")
         requireAlpn(extensions)
-        return Tls13EncryptedExtensions(
-            required(extensions, EXT_QUIC_TRANSPORT_PARAMETERS, "QUIC transport parameters")
-        )
+        return Tls13EncryptedExtensions(required(extensions, EXT_QUIC_TRANSPORT_PARAMETERS, "QUIC transport parameters"))
     }
 
     private fun requireClientProfile(extensions: Map<Int, ByteArray>) {
@@ -188,9 +169,7 @@ internal object Tls13HelloCodec {
         }
         if (!p256) fail("ClientHello does not offer secp256r1")
 
-        val signatures = TlsReader(
-            required(extensions, EXT_SIGNATURE_ALGORITHMS, "signature_algorithms")
-        )
+        val signatures = TlsReader(required(extensions, EXT_SIGNATURE_ALGORITHMS, "signature_algorithms"))
         val signatureList = TlsReader(signatures.vector16(MAX_TLS_VECTOR_SIZE))
         signatures.requireEnd("signature_algorithms")
         var ecdsa = false

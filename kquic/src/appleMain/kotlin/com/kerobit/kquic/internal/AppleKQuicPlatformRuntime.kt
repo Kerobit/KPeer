@@ -82,12 +82,7 @@ private object AppleKQuicCryptoRuntime : KQuicCryptoRuntime {
             val input = message.toAppleCFData()
             try {
                 val signature = checkNotNull(
-                    SecKeyCreateSignature(
-                        privateKey,
-                        kSecKeyAlgorithmECDSASignatureMessageX962SHA256,
-                        input,
-                        null
-                    )
+                    SecKeyCreateSignature(privateKey, kSecKeyAlgorithmECDSASignatureMessageX962SHA256, input, null)
                 ) {
                     "Security.framework failed to create an ECDSA signature"
                 }
@@ -119,9 +114,7 @@ private object AppleKQuicCryptoRuntime : KQuicCryptoRuntime {
 internal fun appleCreateP256Key() = memScoped {
     val bitCount = alloc<IntVar>()
     bitCount.value = 256
-    val bitCountNumber = checkNotNull(
-        CFNumberCreate(null, kCFNumberIntType, bitCount.ptr)
-    )
+    val bitCountNumber = checkNotNull(CFNumberCreate(null, kCFNumberIntType, bitCount.ptr))
     val keys = allocArray<COpaquePointerVar>(2)
     val values = allocArray<COpaquePointerVar>(2)
     keys[0] = kSecAttrKeyType
@@ -129,14 +122,7 @@ internal fun appleCreateP256Key() = memScoped {
     keys[1] = kSecAttrKeySizeInBits
     values[1] = bitCountNumber
     val parameters = checkNotNull(
-        CFDictionaryCreate(
-            null,
-            keys,
-            values,
-            2,
-            kCFTypeDictionaryKeyCallBacks.ptr,
-            kCFTypeDictionaryValueCallBacks.ptr
-        )
+        CFDictionaryCreate(null, keys, values, 2, kCFTypeDictionaryKeyCallBacks.ptr, kCFTypeDictionaryValueCallBacks.ptr)
     )
     try {
         checkNotNull(SecKeyCreateRandomKey(parameters, null)) {
@@ -161,23 +147,13 @@ internal fun appleSha256(input: ByteArray): ByteArray {
     val output = ByteArray(CC_SHA256_DIGEST_LENGTH)
     if (input.isEmpty()) {
         output.usePinned { outputPinned ->
-            checkNotNull(
-                CC_SHA256(
-                    null,
-                    0u,
-                    outputPinned.addressOf(0).reinterpret()
-                )
+            checkNotNull(CC_SHA256(null, 0u, outputPinned.addressOf(0).reinterpret())
             )
         }
     } else {
         input.usePinned { inputPinned ->
             output.usePinned { outputPinned ->
-                checkNotNull(
-                    CC_SHA256(
-                        inputPinned.addressOf(0),
-                        input.size.convert(),
-                        outputPinned.addressOf(0).reinterpret()
-                    )
+                checkNotNull(CC_SHA256(inputPinned.addressOf(0), input.size.convert(), outputPinned.addressOf(0).reinterpret())
                 )
             }
         }

@@ -54,13 +54,7 @@ internal object AppleTls13HandshakeCrypto : Tls13HandshakeCrypto {
                 val peer = createP256PublicKey(peerPublicKey)
                 try {
                     val result = checkNotNull(
-                        SecKeyCopyKeyExchangeResult(
-                            privateKey,
-                            kSecKeyAlgorithmECDHKeyExchangeStandard,
-                            peer,
-                            null,
-                            null
-                        )
+                        SecKeyCopyKeyExchangeResult(privateKey, kSecKeyAlgorithmECDHKeyExchangeStandard, peer, null, null)
                     ) { "Security.framework ECDH failed" }
                     try {
                         return result.toKQuicByteArray()
@@ -88,19 +82,11 @@ internal object AppleTls13HandshakeCrypto : Tls13HandshakeCrypto {
         message: ByteArray,
         signature: ByteArray
     ): Boolean {
-        val publicKey = createP256PublicKey(
-            extractP256PublicPoint(subjectPublicKeyInfoDer)
-        )
+        val publicKey = createP256PublicKey(extractP256PublicPoint(subjectPublicKeyInfoDer))
         val signedData = message.toAppleCFData()
         val signatureData = signature.toAppleCFData()
         return try {
-            SecKeyVerifySignature(
-                publicKey,
-                kSecKeyAlgorithmECDSASignatureMessageX962SHA256,
-                signedData,
-                signatureData,
-                null
-            )
+            SecKeyVerifySignature(publicKey, kSecKeyAlgorithmECDSASignatureMessageX962SHA256, signedData, signatureData, null)
         } finally {
             CFRelease(signatureData)
             CFRelease(signedData)
@@ -124,14 +110,7 @@ internal fun appleHmacSha256(key: ByteArray, data: ByteArray): ByteArray {
     key.usePinned { keyPinned ->
         if (data.isEmpty()) {
             output.usePinned { outputPinned ->
-                CCHmac(
-                    kCCHmacAlgSHA256,
-                    keyPinned.addressOf(0),
-                    key.size.convert(),
-                    null,
-                    0u,
-                    outputPinned.addressOf(0)
-                )
+                CCHmac(kCCHmacAlgSHA256, keyPinned.addressOf(0), key.size.convert(), null, 0u, outputPinned.addressOf(0))
             }
         } else {
             data.usePinned { dataPinned ->
@@ -156,9 +135,7 @@ private fun createP256PublicKey(publicPoint: ByteArray) = memScoped {
     require(publicPoint.size == 65 && publicPoint[0] == 0x04.toByte())
     val bitCount = alloc<IntVar>()
     bitCount.value = 256
-    val bitCountNumber = checkNotNull(
-        CFNumberCreate(null, kCFNumberIntType, bitCount.ptr)
-    )
+    val bitCountNumber = checkNotNull(CFNumberCreate(null, kCFNumberIntType, bitCount.ptr))
     val keys = allocArray<COpaquePointerVar>(3)
     val values = allocArray<COpaquePointerVar>(3)
     keys[0] = kSecAttrKeyType
@@ -168,14 +145,7 @@ private fun createP256PublicKey(publicPoint: ByteArray) = memScoped {
     keys[2] = kSecAttrKeySizeInBits
     values[2] = bitCountNumber
     val attributes = checkNotNull(
-        CFDictionaryCreate(
-            null,
-            keys,
-            values,
-            3,
-            kCFTypeDictionaryKeyCallBacks.ptr,
-            kCFTypeDictionaryValueCallBacks.ptr
-        )
+        CFDictionaryCreate(null, keys, values, 3, kCFTypeDictionaryKeyCallBacks.ptr, kCFTypeDictionaryValueCallBacks.ptr)
     )
     val data = publicPoint.toAppleCFData()
     try {

@@ -46,9 +46,7 @@ internal object AndroidTls13HandshakeCrypto : Tls13HandshakeCrypto {
         message: ByteArray,
         signature: ByteArray
     ): Boolean {
-        val publicKey = KeyFactory.getInstance("EC").generatePublic(
-            X509EncodedKeySpec(subjectPublicKeyInfoDer)
-        )
+        val publicKey = KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(subjectPublicKeyInfoDer))
         return Signature.getInstance("SHA256withECDSA").run {
             initVerify(publicKey)
             update(message)
@@ -64,10 +62,7 @@ private fun ECPublicKey.toUncompressedPoint(): ByteArray =
 
 private fun ByteArray.toPoint(): ECPoint {
     require(size == 65 && first() == 0x04.toByte())
-    return ECPoint(
-        BigInteger(1, copyOfRange(1, 33)),
-        BigInteger(1, copyOfRange(33, 65))
-    )
+    return ECPoint(BigInteger(1, copyOfRange(1, 33)), BigInteger(1, copyOfRange(33, 65)))
 }
 
 private fun BigInteger.toUnsignedFixed(size: Int): ByteArray {

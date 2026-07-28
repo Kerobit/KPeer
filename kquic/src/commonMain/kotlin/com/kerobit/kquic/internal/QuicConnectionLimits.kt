@@ -80,10 +80,7 @@ internal class QuicConnectionIdRegistry(
         val retired = peerIds.keys.filter { it < frame.retirePriorTo }
         retired.forEach(peerIds::remove)
         if (frame.sequence !in peerIds) {
-            peerIds[frame.sequence] = Entry(
-                frame.connectionId.copyOf(),
-                frame.statelessResetToken.copyOf()
-            )
+            peerIds[frame.sequence] = Entry(frame.connectionId.copyOf(), frame.statelessResetToken.copyOf())
         }
         if (peerIds.size.toULong() > activeConnectionIdLimit) {
             throw KQuicError.ProtocolViolation("Peer exceeded active_connection_id_limit")

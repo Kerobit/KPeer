@@ -59,9 +59,7 @@ internal object QuicInvariantHeaders {
             QuicInvariantHeader.Long(first, version, destination, source, reader.position)
         } else {
             val length = shortHeaderDestinationIdLength
-                ?: throw KQuicError.ProtocolViolation(
-                    "Short-header destination connection ID length is required"
-                )
+                ?: throw KQuicError.ProtocolViolation("Short-header destination connection ID length is required")
             if (length !in 0..MAX_CONNECTION_ID_LENGTH) {
                 throw KQuicError.ProtocolViolation("Invalid short-header connection ID length")
             }
@@ -83,11 +81,7 @@ internal object QuicInvariantHeaders {
         val versions = buildList {
             while (reader.remaining > 0) add(reader.uint32())
         }
-        return QuicVersionNegotiationPacket(
-            invariant.destinationConnectionId,
-            invariant.sourceConnectionId,
-            versions
-        )
+        return QuicVersionNegotiationPacket(invariant.destinationConnectionId, invariant.sourceConnectionId, versions)
     }
 
     fun decodeRetry(packet: ByteArray): QuicRetryPacket {
@@ -224,9 +218,7 @@ internal object QuicLongHeaders {
 
     private fun validateConnectionId(value: ByteArray) {
         if (value.size > MAX_CONNECTION_ID_LENGTH) {
-            throw KQuicError.ProtocolViolation(
-                "QUIC connection ID exceeds $MAX_CONNECTION_ID_LENGTH bytes"
-            )
+            throw KQuicError.ProtocolViolation("QUIC connection ID exceeds $MAX_CONNECTION_ID_LENGTH bytes")
         }
     }
 
@@ -357,9 +349,7 @@ private class PacketCursor(
     fun connectionId(): ByteArray {
         val length = byte()
         if (length > MAX_CONNECTION_ID_LENGTH) {
-            throw KQuicError.ProtocolViolation(
-                "QUIC connection ID exceeds $MAX_CONNECTION_ID_LENGTH bytes"
-            )
+            throw KQuicError.ProtocolViolation("QUIC connection ID exceeds $MAX_CONNECTION_ID_LENGTH bytes")
         }
         return bytes(length)
     }

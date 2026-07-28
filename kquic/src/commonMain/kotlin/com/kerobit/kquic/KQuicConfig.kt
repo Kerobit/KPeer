@@ -47,12 +47,7 @@ class KQuicIdentity private constructor(
             signer: KQuicSigner,
             publicKeySha256: String,
             releasePlatformKey: (() -> Unit)? = null
-        ): KQuicIdentity = KQuicIdentity(
-            certificateChainDer,
-            signer,
-            publicKeySha256,
-            releasePlatformKey
-        )
+        ): KQuicIdentity = KQuicIdentity(certificateChainDer, signer, publicKeySha256, releasePlatformKey)
     }
 
     internal fun release() {
@@ -63,10 +58,7 @@ class KQuicIdentity private constructor(
     }
 }
 
-data class KQuicHandshakeRequest(
-    val rendezvousId: String,
-    val isInitiator: Boolean
-)
+data class KQuicHandshakeRequest(val rendezvousId: String, val isInitiator: Boolean)
 
 data class KQuicRemoteIdentity(
     val certificateChainDer: List<ByteArray>,

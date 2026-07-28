@@ -5,13 +5,7 @@ import com.kerobit.kquic.KQuicConfig
 import com.kerobit.kquic.KQuicDelivery
 import com.kerobit.kquic.KQuicError
 import com.kerobit.kquic.KQuicTransportEvent
-import kotlin.concurrent.atomics.AtomicInt
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
-/**
- * Deterministic channel, stream and flow-control state for one QUIC connection.
- */
-@OptIn(ExperimentalAtomicApi::class)
 internal class QuicChannelManager(
     private val endpointRole: QuicEndpointRole,
     private val config: KQuicConfig,
@@ -20,21 +14,7 @@ internal class QuicChannelManager(
     private val bufferedAmountDrained: (String, Int) -> Unit,
     private val emitEvent: suspend (KQuicTransportEvent) -> Unit
 ) {
-    private class Binding(
-        val id: ULong,
-        val label: String,
-        val delivery: KQuicDelivery,
-        val streamId: ULong
-    )
-
-    private data class PendingWrite(
-        val binding: Binding,
-        val bytes: ByteArray,
-        val fin: Boolean,
-        val reservedBytes: Int,
-        val bufferedBytes: Int,
-        var position: Int = 0
-    )
+    private class Binding(val id: ULong, val label: String, val delivery: KQuicDelivery, val streamId: ULong)
 
     private val streamManager = QuicStreamManager(
         role = endpointRole,
@@ -43,45 +23,26 @@ internal class QuicChannelManager(
         localMaxStreamData = config.limits.maxStreamData.toULong(),
         maximumBufferedBytesPerStream = config.limits.maxBufferedStreamBytes
     )
-    private val streamSenders = mutableMapOf<ULong, QuicStreamSender>()
     private val streamDecoders = mutableMapOf<ULong, QuicChannelFrameDecoder>()
-    private val pendingWrites = mutableListOf<PendingWrite>()
-    private val streamDataConsumed = mutableMapOf<ULong, ULong>()
     private val channelsById = mutableMapOf<ULong, Binding>()
     private val channelsByLabel = mutableMapOf<String, Binding>()
-    private val pendingApplicationBytes = AtomicInt(0)
+    private val flowController = QuicFlowController(endpointRole, config, queuedFrameBytes, enqueue, bufferedAmountDrained)
 
     private var nextChannelId = if (endpointRole == QuicEndpointRole.CLIENT) 0uL else 1uL
     private var localControlStreamId: ULong? = null
-    private var peerMaxConnectionData = 0uL
-    private var peerConnectionDataSent = 0uL
-    private var localConnectionDataConsumed = 0uL
     private var remoteParameters: QuicTransportParameterValues? = null
 
     var datagramsDropped: Long = 0
         private set
-    var streamsBlocked: Long = 0
-        private set
+    val streamsBlocked: Long get() = flowController.streamsBlocked
 
-    fun reserve(payloadSize: Int): Int? {
-        if (payloadSize > config.limits.maxMessageSize) return null
-        val reservation = payloadSize + APPLICATION_MESSAGE_OVERHEAD
-        while (true) {
-            val current = pendingApplicationBytes.load()
-            if (current + reservation > config.limits.maxSendQueueBytes) return null
-            if (pendingApplicationBytes.compareAndSet(current, current + reservation)) {
-                return reservation
-            }
-        }
-    }
+    fun reserve(payloadSize: Int): Int? = flowController.reserve(payloadSize)
 
-    fun release(reservedBytes: Int) {
-        if (reservedBytes > 0) pendingApplicationBytes.fetchAndAdd(-reservedBytes)
-    }
+    fun release(reservedBytes: Int) = flowController.release(reservedBytes)
 
     fun applyRemoteParameters(parameters: QuicTransportParameterValues) {
         remoteParameters = parameters
-        peerMaxConnectionData = parameters.initialMaxData
+        flowController.applyRemoteParameters(parameters)
         streamManager.updatePeerMaxStreams(true, parameters.initialMaxStreamsBidi)
         streamManager.updatePeerMaxStreams(false, parameters.initialMaxStreamsUni)
     }
@@ -91,15 +52,11 @@ internal class QuicChannelManager(
     }
 
     fun updatePeerMaxStreamData(streamId: ULong, maximum: ULong) {
-        streamSenders[streamId]?.let {
-            it.updateMaximumData(maximum)
-            drain()
-        }
+        flowController.updatePeerMaxStreamData(streamId, maximum)
     }
 
     fun updatePeerMaxData(maximum: ULong) {
-        peerMaxConnectionData = maxOf(peerMaxConnectionData, maximum)
-        drain()
+        flowController.updatePeerMaxData(maximum)
     }
 
     fun open(channelConfig: KQuicChannelConfig) {
@@ -114,9 +71,7 @@ internal class QuicChannelManager(
         if (channelConfig.delivery == KQuicDelivery.UNRELIABLE &&
             remoteParameters?.maxDatagramFrameSize == null
         ) {
-            throw KQuicError.UnsupportedDelivery(
-                "The remote peer did not negotiate QUIC DATAGRAM"
-            )
+            throw KQuicError.UnsupportedDelivery("The remote peer did not negotiate QUIC DATAGRAM")
         }
         val streamId = if (channelConfig.delivery == KQuicDelivery.UNRELIABLE) {
             localControlStreamId ?: streamManager.openBidirectional().also {
@@ -145,12 +100,7 @@ internal class QuicChannelManager(
             QuicChannelMessage.Bytes(binding.id, payload)
         }
         if (binding.delivery == KQuicDelivery.RELIABLE_ORDERED) {
-            queue(
-                binding,
-                message,
-                reservedBytes = reservedBytes,
-                bufferedBytes = payload.size
-            )
+            queue(binding, message, reservedBytes = reservedBytes, bufferedBytes = payload.size)
             return
         }
         val encoded = QuicChannelFrames.encode(message, config.limits)
@@ -170,34 +120,19 @@ internal class QuicChannelManager(
     fun close(label: String) {
         val binding = channelsByLabel.remove(label) ?: return
         channelsById.remove(binding.id)
-        queue(
-            binding,
-            QuicChannelMessage.Close(binding.id),
-            fin = binding.delivery == KQuicDelivery.RELIABLE_ORDERED
-        )
+        queue(binding, QuicChannelMessage.Close(binding.id), fin = binding.delivery == KQuicDelivery.RELIABLE_ORDERED)
     }
 
     fun peerBlockedOnConnection() {
-        enqueue(
-            QuicFrame.MaxData(
-                config.limits.maxConnectionData.toULong() + localConnectionDataConsumed
-            ),
-            false
-        )
+        enqueue(flowController.connectionCreditFrame(), false)
     }
 
     fun peerBlockedOnStream(streamId: ULong) {
-        enqueue(
-            QuicFrame.MaxStreamData(
-                streamId,
-                config.limits.maxStreamData.toULong() + localConnectionDataConsumed
-            ),
-            false
-        )
+        enqueue(flowController.streamCreditFrame(streamId), false)
     }
 
     fun peerBlockedOnStreams() {
-        streamsBlocked++
+        flowController.peerBlockedOnStreams()
     }
 
     suspend fun streamReset(streamId: ULong) {
@@ -209,31 +144,14 @@ internal class QuicChannelManager(
     suspend fun processStream(frame: QuicFrame.Stream) {
         val received = streamManager.receive(frame)
         if (received.bytes.isEmpty()) return
-        localConnectionDataConsumed += received.bytes.size.toULong()
-        val consumedOnStream = (streamDataConsumed[frame.streamId] ?: 0uL) +
-            received.bytes.size.toULong()
-        streamDataConsumed[frame.streamId] = consumedOnStream
+        val credit = flowController.consume(frame.streamId, received.bytes.size)
         val decoder = streamDecoders.getOrPut(frame.streamId) {
             QuicChannelFrameDecoder(config.limits)
         }
         decoder.feed(received.bytes).forEach { processMessage(frame.streamId, it) }
-        enqueue(
-            QuicFrame.MaxData(
-                config.limits.maxConnectionData.toULong() + localConnectionDataConsumed
-            ),
-            false
-        )
-        enqueue(
-            QuicFrame.MaxStreamData(
-                frame.streamId,
-                config.limits.maxStreamData.toULong() + consumedOnStream
-            ),
-            false
-        )
-        streamManager.updateLocalStreamLimit(
-            frame.streamId,
-            config.limits.maxStreamData.toULong() + consumedOnStream
-        )
+        enqueue(QuicFrame.MaxData(credit.connectionMaximum), false)
+        enqueue(QuicFrame.MaxStreamData(frame.streamId, credit.streamMaximum), false)
+        streamManager.updateLocalStreamLimit(frame.streamId, credit.streamMaximum)
     }
 
     suspend fun processDatagram(frame: QuicFrame.Datagram) {
@@ -244,73 +162,9 @@ internal class QuicChannelManager(
         processMessage(NO_STREAM_ID, messages.single())
     }
 
-    fun drain() {
-        var index = 0
-        while (index < pendingWrites.size) {
-            val pending = pendingWrites[index]
-            if (pendingWrites.take(index).any {
-                    it.binding.streamId == pending.binding.streamId
-                }
-            ) {
-                index++
-                continue
-            }
-            val sender = streamSenders.getOrPut(pending.binding.streamId) {
-                QuicStreamSender(
-                    pending.binding.streamId,
-                    initialPeerStreamCredit(pending.binding.streamId)
-                )
-            }
-            val remaining = pending.bytes.size - pending.position
-            val connectionCredit = peerMaxConnectionData - peerConnectionDataSent
-            val available = minOf(
-                minOf(remaining.toULong(), sender.availableData),
-                minOf(connectionCredit, QUIC_MAX_FRAME_PAYLOAD.toULong())
-            ).toInt()
-            val emptyFin = remaining == 0 && pending.fin
-            if (available == 0 && !emptyFin) {
-                streamsBlocked++
-                if (connectionCredit == 0uL) {
-                    enqueue(QuicFrame.DataBlocked(peerMaxConnectionData), false)
-                }
-                if (sender.availableData == 0uL) {
-                    enqueue(
-                        QuicFrame.StreamDataBlocked(
-                            pending.binding.streamId,
-                            sender.maximumDataLimit
-                        ),
-                        false
-                    )
-                }
-                index++
-                continue
-            }
-            if (queuedFrameBytes() + available + QUIC_PACKET_OVERHEAD * 2 >
-                config.limits.maxSendQueueBytes
-            ) {
-                return
-            }
-            val end = pending.position + available
-            val chunk = pending.bytes.copyOfRange(pending.position, end)
-            val final = pending.fin && end == pending.bytes.size
-            check(enqueue(sender.frame(chunk, final), true))
-            peerConnectionDataSent += chunk.size.toULong()
-            pending.position = end
-            if (pending.position == pending.bytes.size) {
-                pendingWrites.removeAt(index)
-                release(pending.reservedBytes)
-                if (pending.bufferedBytes > 0) {
-                    bufferedAmountDrained(pending.binding.label, pending.bufferedBytes)
-                }
-            } else {
-                index++
-            }
-        }
-    }
+    fun drain() = flowController.drain()
 
-    fun reset() {
-        pendingApplicationBytes.store(0)
-    }
+    fun reset() = flowController.reset()
 
     private fun queue(
         binding: Binding,
@@ -320,8 +174,7 @@ internal class QuicChannelManager(
         bufferedBytes: Int = 0
     ) {
         val encoded = QuicChannelFrames.encode(message, config.limits)
-        pendingWrites += PendingWrite(binding, encoded, fin, reservedBytes, bufferedBytes)
-        drain()
+        flowController.queue(binding.streamId, binding.label, encoded, fin, reservedBytes, bufferedBytes)
     }
 
     private suspend fun processMessage(streamId: ULong, message: QuicChannelMessage) {
@@ -337,19 +190,10 @@ internal class QuicChannelManager(
                     channelsById[message.channelId] = existing
                     return
                 }
-                val binding = Binding(
-                    message.channelId,
-                    message.label,
-                    message.delivery,
-                    streamId
-                )
+                val binding = Binding(message.channelId, message.label, message.delivery, streamId)
                 channelsById[binding.id] = binding
                 channelsByLabel[binding.label] = binding
-                emitEvent(
-                    KQuicTransportEvent.IncomingChannel(
-                        KQuicChannelConfig(binding.label, binding.delivery)
-                    )
-                )
+                emitEvent(KQuicTransportEvent.IncomingChannel(KQuicChannelConfig(binding.label, binding.delivery)))
             }
             is QuicChannelMessage.Bytes -> {
                 val binding = bindingForPayload(message.channelId, streamId) ?: return
@@ -379,18 +223,6 @@ internal class QuicChannelManager(
         return null
     }
 
-    private fun initialPeerStreamCredit(streamId: ULong): ULong {
-        val parameters = remoteParameters ?: return 0uL
-        val locallyInitiated = (streamId and 0x01uL) ==
-            if (endpointRole == QuicEndpointRole.CLIENT) 0uL else 1uL
-        return if (locallyInitiated) {
-            parameters.initialMaxStreamDataBidiRemote
-        } else {
-            parameters.initialMaxStreamDataBidiLocal
-        }
-    }
 }
 
-private const val APPLICATION_MESSAGE_OVERHEAD = 32
-private const val QUIC_PACKET_OVERHEAD = 64
 private val NO_STREAM_ID = ULong.MAX_VALUE

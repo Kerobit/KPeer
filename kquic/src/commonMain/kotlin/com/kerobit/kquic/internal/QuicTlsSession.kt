@@ -9,10 +9,7 @@ internal enum class QuicEncryptionLevel {
     ONE_RTT
 }
 
-internal data class QuicTrafficSecrets(
-    val read: ByteArray,
-    val write: ByteArray
-)
+internal data class QuicTrafficSecrets(val read: ByteArray, val write: ByteArray)
 
 /**
  * Events emitted by the TLS protocol machine to the QUIC connection actor.
@@ -71,9 +68,7 @@ internal enum class TlsHandshakeType(val wireValue: Int) {
     companion object {
         fun fromWire(value: Int): TlsHandshakeType =
             entries.firstOrNull { it.wireValue == value }
-                ?: throw KQuicError.ProtocolViolation(
-                    "Unsupported TLS 1.3 handshake message type $value"
-                )
+                ?: throw KQuicError.ProtocolViolation("Unsupported TLS 1.3 handshake message type $value")
     }
 }
 
@@ -150,16 +145,8 @@ internal class Tls13KeySchedule(
         val transcriptHash = primitives.sha256(helloTranscript)
         return Tls13HandshakeSecrets(
             handshakeSecret = handshakeSecret,
-            clientHandshakeTrafficSecret = deriveSecret(
-                handshakeSecret,
-                "c hs traffic",
-                transcriptHash
-            ),
-            serverHandshakeTrafficSecret = deriveSecret(
-                handshakeSecret,
-                "s hs traffic",
-                transcriptHash
-            )
+            clientHandshakeTrafficSecret = deriveSecret(handshakeSecret, "c hs traffic", transcriptHash),
+            serverHandshakeTrafficSecret = deriveSecret(handshakeSecret, "s hs traffic", transcriptHash)
         )
     }
 
@@ -172,16 +159,8 @@ internal class Tls13KeySchedule(
         val transcriptHash = primitives.sha256(serverFinishedTranscript)
         return Tls13ApplicationSecrets(
             masterSecret = masterSecret,
-            clientApplicationTrafficSecret = deriveSecret(
-                masterSecret,
-                "c ap traffic",
-                transcriptHash
-            ),
-            serverApplicationTrafficSecret = deriveSecret(
-                masterSecret,
-                "s ap traffic",
-                transcriptHash
-            )
+            clientApplicationTrafficSecret = deriveSecret(masterSecret, "c ap traffic", transcriptHash),
+            serverApplicationTrafficSecret = deriveSecret(masterSecret, "s ap traffic", transcriptHash)
         )
     }
 
@@ -194,12 +173,7 @@ internal class Tls13KeySchedule(
         QuicPacketProtectionKeys(
             key = expandLabel(trafficSecret, "quic key", ByteArray(0), AES_128_KEY_LENGTH),
             iv = expandLabel(trafficSecret, "quic iv", ByteArray(0), QUIC_IV_LENGTH),
-            headerProtectionKey = expandLabel(
-                trafficSecret,
-                "quic hp",
-                ByteArray(0),
-                AES_128_KEY_LENGTH
-            )
+            headerProtectionKey = expandLabel(trafficSecret, "quic hp", ByteArray(0), AES_128_KEY_LENGTH)
         )
 
     fun deriveSecret(secret: ByteArray, label: String, transcriptHash: ByteArray): ByteArray =
@@ -231,10 +205,7 @@ internal class Tls13KeySchedule(
         var result = ByteArray(0)
         var counter = 1
         while (result.size < length) {
-            previous = primitives.hmacSha256(
-                secret,
-                previous + info + byteArrayOf(counter.toByte())
-            )
+            previous = primitives.hmacSha256(secret, previous + info + byteArrayOf(counter.toByte()))
             result += previous
             counter++
         }

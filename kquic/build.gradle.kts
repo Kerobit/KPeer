@@ -99,3 +99,54 @@ mavenPublishing {
         }
     }
 }
+
+val kquicProductionLocLimit = 7_400
+val kquicProductionSourceTrees = listOf("commonMain", "androidMain", "appleMain").map { sourceSet ->
+    fileTree("src/$sourceSet") { include("**/*.kt") }
+}
+
+fun codeLines(file: File): Int {
+    var insideBlockComment = false
+    return file.readLines().count { sourceLine ->
+        var remainder = sourceLine
+        var containsCode = false
+        while (remainder.isNotEmpty() && !containsCode) {
+            val trimmed = remainder.trimStart()
+            if (insideBlockComment) {
+                val end = trimmed.indexOf("*/")
+                if (end < 0) {
+                    remainder = ""
+                } else {
+                    insideBlockComment = false
+                    remainder = trimmed.substring(end + 2)
+                }
+            } else if (trimmed.isEmpty() || trimmed.startsWith("//")) {
+                remainder = ""
+            } else if (trimmed.startsWith("/*")) {
+                insideBlockComment = true
+                remainder = trimmed.substring(2)
+            } else {
+                containsCode = true
+            }
+        }
+        containsCode
+    }
+}
+
+val checkKQuicProductionLoc by tasks.registering {
+    group = "verification"
+    description = "Checks non-blank, non-comment Kotlin production lines against the KQuic budget."
+    inputs.files(kquicProductionSourceTrees)
+    doLast {
+        val sourceFiles = kquicProductionSourceTrees.flatMap { it.files }.sortedBy(File::getPath)
+        val total = sourceFiles.sumOf(::codeLines)
+        logger.lifecycle("KQuic production LOC: $total / $kquicProductionLocLimit")
+        check(total <= kquicProductionLocLimit) {
+            "KQuic production LOC is $total, exceeding the $kquicProductionLocLimit line budget"
+        }
+    }
+}
+
+tasks.named("check") {
+    dependsOn(checkKQuicProductionLoc)
+}

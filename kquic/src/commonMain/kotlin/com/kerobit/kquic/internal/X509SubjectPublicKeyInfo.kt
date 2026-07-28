@@ -60,10 +60,7 @@ private class DerCursor(private val source: ByteArray) {
         if (length < 0 || length > source.size - position) malformed()
         val contentStart = position
         position += length
-        return DerElement(
-            encoded = source.copyOfRange(start, position),
-            content = source.copyOfRange(contentStart, position)
-        )
+        return DerElement(encoded = source.copyOfRange(start, position), content = source.copyOfRange(contentStart, position))
     }
 
     private fun read(): Int {

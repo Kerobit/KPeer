@@ -29,9 +29,7 @@ internal class QuicTransportParameters(private val values: Map<ULong, ByteArray>
             maxAckDelayMs = varIntValue(MAX_ACK_DELAY) ?: 25uL,
             activeConnectionIdLimit = varIntValue(ACTIVE_CONNECTION_ID_LIMIT) ?: 2uL,
             initialSourceConnectionId = value(INITIAL_SOURCE_CONNECTION_ID)
-                ?: throw KQuicError.ProtocolViolation(
-                    "Missing initial_source_connection_id transport parameter"
-                ),
+                ?: throw KQuicError.ProtocolViolation("Missing initial_source_connection_id transport parameter"),
             retrySourceConnectionId = value(RETRY_SOURCE_CONNECTION_ID),
             maxDatagramFrameSize = varIntValue(MAX_DATAGRAM_FRAME_SIZE)
         )

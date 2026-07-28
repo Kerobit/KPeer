@@ -10,10 +10,7 @@ internal data class KQuicSocketAddress(
     }
 }
 
-internal data class KQuicInboundDatagram(
-    val source: KQuicSocketAddress,
-    val payload: ByteArray
-)
+internal data class KQuicInboundDatagram(val source: KQuicSocketAddress, val payload: ByteArray)
 
 /**
  * Small UDP boundary used by the platform QUIC engine. Implementations must make [close]

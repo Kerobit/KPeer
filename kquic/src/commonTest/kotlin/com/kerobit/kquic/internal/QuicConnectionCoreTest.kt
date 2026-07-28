@@ -1,5 +1,7 @@
 package com.kerobit.kquic.internal
 
+import com.kerobit.kquic.KQuicChannelConfig
+import com.kerobit.kquic.KQuicTransportEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -24,7 +26,7 @@ class QuicConnectionCoreTest {
             ByteArray(24)
         )
         assertIs<QuicConnectionCore.Effect.DatagramReady>(
-            core.receive(datagram, nowMs = 150).single()
+            core.command(QuicConnectionCore.Command.Receive(datagram, nowMs = 150)).single()
         )
         val outgoing = core.transmit(
             destination = KQuicSocketAddress("127.0.0.1", 4_433),
@@ -51,20 +53,39 @@ class QuicConnectionCoreTest {
 
         assertEquals(
             listOf(QuicConnectionCore.Effect.CheckNetwork),
-            core.deadline(250)
+            core.command(QuicConnectionCore.Command.Deadline(250))
         )
         assertEquals(
             listOf(
                 QuicConnectionCore.Effect.IdleTimeout,
                 QuicConnectionCore.Effect.CheckNetwork
             ),
-            core.deadline(1_000)
+            core.command(QuicConnectionCore.Command.Deadline(1_000))
         )
         assertEquals(
             listOf(QuicConnectionCore.Effect.CloseRequested("application_close")),
             core.close("application_close")
         )
-        assertTrue(core.deadline(2_000).isEmpty())
+        assertTrue(core.command(QuicConnectionCore.Command.Deadline(2_000)).isEmpty())
         assertTrue(core.close("again").isEmpty())
+    }
+
+    @Test
+    fun application_commands_and_transport_events_cross_the_typed_boundary() {
+        val core = QuicConnectionCore(0, 1_000, 250)
+        core.start()
+        val config = KQuicChannelConfig("game")
+
+        assertEquals(
+            QuicConnectionCore.Effect.OpenChannelRequested(config),
+            core.command(QuicConnectionCore.Command.OpenChannel(config)).single()
+        )
+        assertIs<QuicConnectionCore.Effect.SendRequested>(
+            core.command(
+                QuicConnectionCore.Command.Send("game", byteArrayOf(1), false, 33)
+            ).single()
+        )
+        val event = KQuicTransportEvent.ChannelClosed("game")
+        assertEquals(event, core.event(event).event)
     }
 }

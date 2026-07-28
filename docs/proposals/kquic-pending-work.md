@@ -12,7 +12,8 @@ signaling, la conectividad, el core QUIC y el driver UDP.
 - Connectivity checks STUN autenticados, retransmisión acotada, roles derivados de `initiator`,
   nominación por el iniciador y selección determinista de ruta.
 - Core determinista sin sockets ni reloj implícito, con espacios de packet number, handshake,
-  canales, flow control y lifecycle separados; un driver ejecuta I/O y deadlines.
+  canales, `QuicFlowController` y lifecycle separados. `QuicConnectionCore` recibe comandos,
+  datagramas y tiempo explícito; produce efectos/eventos tipados que ejecuta `QuicIoDriver`.
 - QUIC v1 Initial/Handshake/1-RTT con AES-128-GCM, header protection, TLS 1.3 mutuo,
   transport parameters y `HANDSHAKE_DONE`.
 - Streams fiables con framing incremental y flow control, más QUIC DATAGRAM para canales
@@ -23,13 +24,19 @@ signaling, la conectividad, el core QUIC y el driver UDP.
 - Vectores RFC 9001/NIST idénticos en Android host e iOS Simulator; red determinista con
   pérdida, duplicación, reordenación y MTU de 1.200 bytes; loopback UDP real con payload
   fragmentado, streams y datagrams.
+- Lifecycle explícito: el constructor y `createChannel()` no realizan I/O; `start()` es
+  thread-safe e idempotente y una oferta auto-inicia únicamente al respondedor.
+- Presupuesto automatizado de 7.400 LOC Kotlin de producción, sin contar líneas vacías ni
+  comentarios. `KQuicPeer`, `KQuicConnection` y `QuicConnectionCore` respetan además sus límites
+  individuales.
 
 ## Pendiente antes de integrar en `kerobit-sdk`
 
 1. Ejecutar la aceptación Android físico ↔ iPhone físico en una LAN.
 2. Ejecutar la aceptación mediante candidatos server-reflexive en NAT compatibles.
 3. Verificar intercambio bidireccional fiable/no fiable, payload grande, cierre limpio y rechazo de
-   identidad incorrecta en ambos escenarios.
+   identidad incorrecta en ambos escenarios. El procedimiento y la tabla de evidencia están en
+   `samples/kquic-mobile-harness/README.md`.
 4. Añadir un monitor de ruta por plataforma. Como no se soporta migración, un cambio debe cerrar
    con `NETWORK_CHANGED` y dejar la reconexión a la aplicación.
 5. Completar pruebas instrumentadas de Android API 24 y ciclos repetidos de creación/cierre para

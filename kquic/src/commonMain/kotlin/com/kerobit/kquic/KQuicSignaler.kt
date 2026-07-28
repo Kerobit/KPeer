@@ -18,10 +18,7 @@ internal class KQuicSignaler(
     private val gatherCandidates: suspend () -> List<KQuicCandidate>,
     private val logger: KQuicLogger
 ) {
-    private val mutableSignals = MutableSharedFlow<KQuicSignal>(
-        replay = 64,
-        extraBufferCapacity = 64
-    )
+    private val mutableSignals = MutableSharedFlow<KQuicSignal>(replay = 64, extraBufferCapacity = 64)
     val signals: Flow<KQuicSignal> = mutableSignals.asSharedFlow()
 
     private val identityReady = CompletableDeferred<KQuicIdentity>()
@@ -142,9 +139,7 @@ internal class KQuicSignaler(
                 if (expected != null && expected == remoteIdentity.publicKeySha256) {
                     KQuicVerificationResult.Accepted
                 } else {
-                    KQuicVerificationResult.Rejected(
-                        "Remote public-key fingerprint does not match authenticated signaling"
-                    )
+                    KQuicVerificationResult.Rejected("Remote public-key fingerprint does not match authenticated signaling")
                 }
             }
         }
@@ -184,9 +179,7 @@ internal class KQuicSignaler(
     private fun setRemoteConnectivityCredentials(value: KQuicConnectivityCredentials) {
         val current = remoteCredentials
         if (current != null && current != value) {
-            throw KQuicError.InvalidSignal(
-                "Remote connectivity credentials changed during rendezvous"
-            )
+            throw KQuicError.InvalidSignal("Remote connectivity credentials changed during rendezvous")
         }
         remoteCredentials = value
     }

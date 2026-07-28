@@ -28,10 +28,7 @@ internal class QuicRecovery(
     private val sent = linkedMapOf<ULong, Sent>()
     var bytesInFlight: Long = 0
         private set
-    var congestionWindow: Long = minOf(
-        10L * maximumDatagramSize,
-        maxOf(2L * maximumDatagramSize, 14_720L)
-    )
+    var congestionWindow: Long = minOf(10L * maximumDatagramSize, maxOf(2L * maximumDatagramSize, 14_720L))
         private set
     var slowStartThreshold: Long = Long.MAX_VALUE
         private set

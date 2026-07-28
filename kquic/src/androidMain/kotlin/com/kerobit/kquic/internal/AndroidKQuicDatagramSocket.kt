@@ -35,10 +35,7 @@ private class AndroidKQuicDatagramSocket(
         }
         withContext(Dispatchers.IO) {
             check(!closed.get()) { "UDP socket is closed" }
-            channel.send(
-                ByteBuffer.wrap(payload),
-                InetSocketAddress(destination.host, destination.port)
-            )
+            channel.send(ByteBuffer.wrap(payload), InetSocketAddress(destination.host, destination.port))
         }
     }
 
@@ -68,10 +65,7 @@ private class AndroidKQuicDatagramSocket(
 
 private fun java.net.SocketAddress.toKQuicAddress(): KQuicSocketAddress {
     val address = this as InetSocketAddress
-    return KQuicSocketAddress(
-        host = address.address?.hostAddress ?: address.hostString,
-        port = address.port
-    )
+    return KQuicSocketAddress(host = address.address?.hostAddress ?: address.hostString, port = address.port)
 }
 
 private const val MAX_UDP_PAYLOAD_SIZE = 65_507

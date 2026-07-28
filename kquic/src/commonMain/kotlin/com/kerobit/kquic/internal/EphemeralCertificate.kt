@@ -21,12 +21,7 @@ internal suspend fun createEphemeralKQuicIdentity(
     require(randomSerial.isNotEmpty())
 
     val signatureAlgorithm = Der.sequence(Der.oid(OID_ECDSA_WITH_SHA256))
-    val commonName = Der.sequence(
-        Der.set(
-            Der.sequence(
-                Der.oid(OID_COMMON_NAME),
-                Der.utf8("KQuic Ephemeral")
-            )
+    val commonName = Der.sequence(Der.set(Der.sequence(Der.oid(OID_COMMON_NAME), Der.utf8("KQuic Ephemeral"))
         )
     )
     val serial = randomSerial.copyOf().also {
@@ -35,12 +30,7 @@ internal suspend fun createEphemeralKQuicIdentity(
     }
     val extensions = Der.context(
         tagNumber = 3,
-        content = Der.sequence(
-            Der.sequence(
-                Der.oid(OID_BASIC_CONSTRAINTS),
-                Der.boolean(true),
-                Der.octetString(Der.sequence())
-            ),
+        content = Der.sequence(Der.sequence(Der.oid(OID_BASIC_CONSTRAINTS), Der.boolean(true), Der.octetString(Der.sequence())),
             Der.sequence(
                 Der.oid(OID_KEY_USAGE),
                 Der.boolean(true),
@@ -53,23 +43,13 @@ internal suspend fun createEphemeralKQuicIdentity(
         Der.integer(serial),
         signatureAlgorithm,
         commonName,
-        Der.sequence(
-            Der.generalizedTime("20200101000000Z"),
-            Der.generalizedTime("20491231235959Z")
-        ),
+        Der.sequence(Der.generalizedTime("20200101000000Z"), Der.generalizedTime("20491231235959Z")),
         commonName,
         subjectPublicKeyInfoDer,
         extensions
     )
-    val signature = signer.sign(
-        com.kerobit.kquic.KQuicSignatureAlgorithm.ECDSA_SECP256R1_SHA256,
-        toBeSigned
-    )
-    val certificate = Der.sequence(
-        toBeSigned,
-        signatureAlgorithm,
-        Der.bitString(signature)
-    )
+    val signature = signer.sign(com.kerobit.kquic.KQuicSignatureAlgorithm.ECDSA_SECP256R1_SHA256, toBeSigned)
+    val certificate = Der.sequence(toBeSigned, signatureAlgorithm, Der.bitString(signature))
     return KQuicIdentity.platformGenerated(
         certificateChainDer = listOf(certificate),
         signer = signer,
@@ -83,11 +63,7 @@ internal fun p256SubjectPublicKeyInfo(publicPoint: ByteArray): ByteArray {
     require(publicPoint.size == 65 && publicPoint[0] == 0x04.toByte()) {
         "P-256 public key must be a 65-byte uncompressed X9.63 point"
     }
-    return Der.sequence(
-        Der.sequence(
-            Der.oid(OID_EC_PUBLIC_KEY),
-            Der.oid(OID_PRIME256V1)
-        ),
+    return Der.sequence(Der.sequence(Der.oid(OID_EC_PUBLIC_KEY), Der.oid(OID_PRIME256V1)),
         Der.bitString(publicPoint)
     )
 }

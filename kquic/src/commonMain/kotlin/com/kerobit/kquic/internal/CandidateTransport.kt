@@ -13,10 +13,7 @@ import com.kerobit.kquic.NoOpKQuicLogger
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** A socket and remote address whose authenticated connectivity check has completed. */
-internal data class ValidatedPath(
-    val socket: KQuicDatagramSocket,
-    val remoteAddress: KQuicSocketAddress
-)
+internal data class ValidatedPath(val socket: KQuicDatagramSocket, val remoteAddress: KQuicSocketAddress)
 
 /**
  * Owns candidate gathering and connectivity checks. A successful [validate] transfers one socket
@@ -27,10 +24,7 @@ internal class CandidateTransport(
     private val config: KQuicConfig,
     var diagnosticLogger: KQuicLogger = NoOpKQuicLogger
 ) {
-    private data class BoundCandidate(
-        val candidate: KQuicCandidate,
-        val socket: KQuicDatagramSocket
-    )
+    private data class BoundCandidate(val candidate: KQuicCandidate, val socket: KQuicDatagramSocket)
 
     private val candidatesByFoundation = linkedMapOf<String, BoundCandidate>()
     private val ownedSockets = linkedSetOf<KQuicDatagramSocket>()
@@ -92,10 +86,7 @@ internal class CandidateTransport(
                                 type = KQuicCandidateType.SERVER_REFLEXIVE,
                                 host = mapped.host,
                                 port = mapped.port,
-                                priority = candidatePriority(
-                                    KQuicCandidateType.SERVER_REFLEXIVE,
-                                    socketIndex
-                                ),
+                                priority = candidatePriority(KQuicCandidateType.SERVER_REFLEXIVE, socketIndex),
                                 relatedHost = related.host,
                                 relatedPort = related.port
                             ),
@@ -114,9 +105,7 @@ internal class CandidateTransport(
         }
         gathered = true
         if (candidatesByFoundation.isEmpty()) {
-            throw KQuicError.CandidateGatheringFailed(
-                "Candidate gathering completed without an address to advertise"
-            )
+            throw KQuicError.CandidateGatheringFailed("Candidate gathering completed without an address to advertise")
         }
         return candidatesByFoundation.values.map(BoundCandidate::candidate)
     }
@@ -134,10 +123,7 @@ internal class CandidateTransport(
         }
         val local = candidatesByFoundation[candidatePair.local.foundation]
             ?: throw KQuicError.ConnectivityCheckFailed("Unknown local candidate")
-        val remoteAddress = KQuicSocketAddress(
-            candidatePair.remote.host,
-            candidatePair.remote.port
-        )
+        val remoteAddress = KQuicSocketAddress(candidatePair.remote.host, candidatePair.remote.port)
         diagnosticLogger.info(
             "Starting authenticated connectivity check role=$role " +
                 "timeoutMs=${config.connectivityCheckTimeoutMs}"
@@ -259,9 +245,7 @@ internal class CandidateTransport(
                     tieBreaker = tieBreaker,
                     hmacSha256 = hmac
                 )
-                diagnosticLogger.debug(
-                    "Connectivity check attempt=$attempts destination=$remoteAddress"
-                )
+                diagnosticLogger.debug("Connectivity check attempt=$attempts destination=$remoteAddress")
                 socket.send(remoteAddress, request)
                 val result = withTimeoutOrNull(
                     CONNECTIVITY_ATTEMPT_TIMEOUT_MS
@@ -271,11 +255,7 @@ internal class CandidateTransport(
                         if (!StunProtocol.isStun(inbound.payload)) continue
                         inboundStunPackets++
                         val requestMessage = runCatching {
-                            StunProtocol.decode(
-                                inbound.payload,
-                                localCredentials.password,
-                                hmac
-                            )
+                            StunProtocol.decode(inbound.payload, localCredentials.password, hmac)
                         }.getOrNull() ?: continue
                         when (requestMessage.type) {
                             StunProtocol.BINDING_REQUEST -> {
@@ -308,11 +288,7 @@ internal class CandidateTransport(
                             }
                             StunProtocol.BINDING_SUCCESS_RESPONSE -> {
                                 val response = runCatching {
-                                    StunProtocol.decode(
-                                        inbound.payload,
-                                        remoteCredentials.password,
-                                        hmac
-                                    )
+                                    StunProtocol.decode(inbound.payload, remoteCredentials.password, hmac)
                                 }.getOrNull() ?: continue
                                 if (controlling &&
                                     response.integrityValid == true &&
@@ -340,9 +316,7 @@ internal class CandidateTransport(
                     "inboundStunPackets=$inboundStunPackets " +
                     "authenticatedPackets=$authenticatedPackets"
             )
-            throw KQuicError.ConnectivityCheckFailed(
-                "No candidate pair passed authenticated connectivity checks"
-            )
+            throw KQuicError.ConnectivityCheckFailed("No candidate pair passed authenticated connectivity checks")
         }
         return validatedRemoteAddress
     }
