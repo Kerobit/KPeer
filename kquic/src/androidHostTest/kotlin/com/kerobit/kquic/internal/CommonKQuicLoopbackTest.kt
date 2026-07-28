@@ -15,8 +15,10 @@ import com.kerobit.kquic.KQuicSecurity
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -30,6 +32,74 @@ import kotlin.test.assertTrue
 
 @OptIn(ExperimentalKQuicApi::class)
 class CommonKQuicLoopbackTest {
+    @Test
+    fun reliable_channels_keep_exchanging_bidirectional_messages_after_handshake() = runBlocking {
+        val initiator = peer(true)
+        val responder = peer(false)
+        try {
+            val offer = async(start = CoroutineStart.UNDISPATCHED) {
+                initiator.signals.filterIsInstance<KQuicOffer>().first()
+            }
+            initiator.start()
+            val answer = async(start = CoroutineStart.UNDISPATCHED) {
+                responder.signals.filterIsInstance<KQuicAnswer>().first()
+            }
+            responder.signal(withTimeout(5_000) { offer.await() })
+            initiator.signal(withTimeout(5_000) { answer.await() })
+            withTimeout(10_000) {
+                initiator.connectionState.first { it == KQuicPeerConnectionState.CONNECTED }
+            }
+            withTimeout(10_000) {
+                responder.connectionState.first { it == KQuicPeerConnectionState.CONNECTED }
+            }
+
+            val responderControl = async(start = CoroutineStart.UNDISPATCHED) {
+                responder.channels.first { it.label == "control" }
+            }
+            val responderData = async(start = CoroutineStart.UNDISPATCHED) {
+                responder.channels.first { it.label == "data" }
+            }
+            val initiatorControl = initiator.createChannel(KQuicChannelConfig("control"))
+            val initiatorData = initiator.createChannel(KQuicChannelConfig("data"))
+            val remoteControl = withTimeout(5_000) { responderControl.await() }
+            val remoteData = withTimeout(5_000) { responderData.await() }
+            val atInitiator = Channel<ByteArray>(Channel.UNLIMITED)
+            val atResponder = Channel<ByteArray>(Channel.UNLIMITED)
+            val collectors = listOf(
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    initiatorControl.bytes.collect(atInitiator::send)
+                },
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    remoteControl.bytes.collect(atResponder::send)
+                },
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    initiatorData.bytes.collect(atInitiator::send)
+                },
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    remoteData.bytes.collect(atResponder::send)
+                },
+            )
+
+            repeat(4) { sequence ->
+                val fromInitiator = "initiator-$sequence".encodeToByteArray()
+                val fromResponder = "responder-$sequence".encodeToByteArray()
+                assertTrue(initiatorControl.send(fromInitiator))
+                assertTrue(remoteControl.send(fromResponder))
+                assertContentEquals(fromInitiator, withTimeout(3_000) { atResponder.receive() })
+                assertContentEquals(fromResponder, withTimeout(3_000) { atInitiator.receive() })
+                assertTrue(initiatorData.send(fromInitiator))
+                assertTrue(remoteData.send(fromResponder))
+                assertContentEquals(fromInitiator, withTimeout(3_000) { atResponder.receive() })
+                assertContentEquals(fromResponder, withTimeout(3_000) { atInitiator.receive() })
+                delay(2_000)
+            }
+            collectors.forEach { it.cancel() }
+        } finally {
+            initiator.close()
+            responder.close()
+        }
+    }
+
     @Test
     fun real_udp_transport_connects_and_exchanges_reliable_bytes() = runBlocking {
         val initiator = peer(true)

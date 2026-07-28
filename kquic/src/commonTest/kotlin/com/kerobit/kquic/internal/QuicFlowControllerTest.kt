@@ -43,27 +43,46 @@ class QuicFlowControllerTest {
     }
 
     @Test
-    fun receive_credit_is_accounted_per_stream_and_connection() {
-        val controller = controller(mutableListOf(), mutableListOf())
+    fun receive_credit_is_batched_at_half_window_and_forced_when_blocked() {
+        val controller = controller(
+            mutableListOf(),
+            mutableListOf(),
+            maxConnectionData = 16,
+            maxStreamData = 8
+        )
 
-        val first = controller.consume(0uL, 10)
-        val second = controller.consume(4uL, 5)
+        val belowThreshold = controller.consume(0uL, 3)
+        assertNull(belowThreshold.connectionMaximum)
+        assertNull(belowThreshold.streamMaximum)
 
-        assertEquals(1_048_586uL, first.connectionMaximum)
-        assertEquals(262_154uL, first.streamMaximum)
-        assertEquals(1_048_591uL, second.connectionMaximum)
-        assertEquals(262_149uL, second.streamMaximum)
+        val streamThreshold = controller.consume(0uL, 1)
+        assertNull(streamThreshold.connectionMaximum)
+        assertEquals(12uL, streamThreshold.streamMaximum)
+
+        val bothThresholds = controller.consume(0uL, 4)
+        assertEquals(24uL, bothThresholds.connectionMaximum)
+        assertEquals(16uL, bothThresholds.streamMaximum)
+
+        controller.consume(0uL, 1)
+        assertEquals(25uL, controller.connectionCreditFrame().maximumData)
+        assertEquals(17uL, controller.streamCreditFrame(0uL).maximumStreamData)
     }
 
     private fun controller(
         frames: MutableList<QuicFrame>,
-        drained: MutableList<Pair<String, Int>>
+        drained: MutableList<Pair<String, Int>>,
+        maxConnectionData: Long = 1_048_576,
+        maxStreamData: Long = 262_144
     ) = QuicFlowController(
         endpointRole = QuicEndpointRole.CLIENT,
         config = KQuicConfig(
             initiator = true,
             rendezvousId = "flow",
-            security = KQuicSecurity.ephemeralWithAuthenticatedSignaling()
+            security = KQuicSecurity.ephemeralWithAuthenticatedSignaling(),
+            limits = com.kerobit.kquic.KQuicLimits(
+                maxConnectionData = maxConnectionData,
+                maxStreamData = maxStreamData
+            )
         ),
         queuedFrameBytes = { 0 },
         enqueue = { frame, _ -> frames.add(frame) },

@@ -259,7 +259,9 @@ internal class CommonQuicConnectionActor(
             is QuicConnectionCore.Effect.CloseRequested -> gracefulClose(effect.reason)
             is QuicConnectionCore.Effect.EventReady -> emitEvent(effect.event)
             QuicConnectionCore.Effect.IdleTimeout ->
-                throw KQuicError.ConnectionTimedOut(config.idleTimeoutMs)
+                throw KQuicError.TransportFailure(
+                    "QUIC idle timeout after ${config.idleTimeoutMs} ms"
+                )
             QuicConnectionCore.Effect.CheckNetwork -> {
                 if (platformRuntime.network.hostAddresses().sorted() != initialHostAddresses) {
                     gracefulClose("NETWORK_CHANGED")
@@ -463,10 +465,20 @@ internal class CommonQuicConnectionActor(
             if (recoverySpace.lossDeadlineMs(now) <= now) {
                 val probes = recoverySpace.ptoProbeFrames()
                 if (probes.isEmpty()) {
-                    enqueue(packetSpace.encryptionLevel, QuicFrame.Ping, required = false)
+                    enqueue(
+                        packetSpace.encryptionLevel,
+                        QuicFrame.Ping,
+                        required = false,
+                        bypassCongestion = true
+                    )
                 } else {
                     probes.forEach {
-                        enqueue(packetSpace.encryptionLevel, it, required = false)
+                        enqueue(
+                            packetSpace.encryptionLevel,
+                            it,
+                            required = false,
+                            bypassCongestion = true
+                        )
                     }
                 }
                 recoverySpace.onPtoExpired()
@@ -485,7 +497,7 @@ internal class CommonQuicConnectionActor(
         )) {
             val packetSpace = packetSpaces[level]
             val queue = packetSpace.frameQueue
-            while (queue.isNotEmpty() && packetSpace.protection != null && !closing) {
+            while (queue.isNotEmpty && packetSpace.protection != null && !closing) {
                 val queued = queue.removeFirst()
                 queuedFrameBytes -= queued.estimatedBytes
                 val frame = queued.frame
@@ -496,7 +508,9 @@ internal class CommonQuicConnectionActor(
                 } else {
                     encoded.size + PACKET_OVERHEAD
                 }
-                if (frame.isAckEliciting() && !recoverySpace.canSend(estimatedPacketSize)) {
+                if (frame.isAckEliciting() &&
+                    !queued.canSend(recoverySpace, estimatedPacketSize)
+                ) {
                     queue.addFirst(queued)
                     queuedFrameBytes += queued.estimatedBytes
                     break
@@ -564,16 +578,21 @@ internal class CommonQuicConnectionActor(
     private fun enqueue(
         level: QuicEncryptionLevel,
         frame: QuicFrame,
-        required: Boolean
+        required: Boolean,
+        bypassCongestion: Boolean = !frame.isAckEliciting()
     ): Boolean {
         val estimated = QuicFrames.encode(frame).size + PACKET_OVERHEAD
-        if (queuedFrameBytes + estimated > config.limits.maxSendQueueBytes) {
+        if (!bypassCongestion &&
+            queuedFrameBytes + estimated > config.limits.maxSendQueueBytes
+        ) {
             if (required) {
                 throw KQuicError.TransportFailure("KQuic send queue exceeded its byte limit")
             }
             return false
         }
-        packetSpaces[level].frameQueue.addLast(QuicQueuedFrame(frame, estimated))
+        packetSpaces[level].frameQueue.addLast(
+            QuicQueuedFrame(frame, estimated, bypassCongestion)
+        )
         queuedFrameBytes += estimated
         return true
     }

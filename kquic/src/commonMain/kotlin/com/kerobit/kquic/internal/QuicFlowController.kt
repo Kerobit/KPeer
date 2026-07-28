@@ -12,7 +12,10 @@ internal class QuicFlowController(
     private val enqueue: (QuicFrame, Boolean) -> Boolean,
     private val bufferedAmountDrained: (String, Int) -> Unit
 ) {
-    data class ReceiveCredit(val connectionMaximum: ULong, val streamMaximum: ULong)
+    data class ReceiveCredit(
+        val connectionMaximum: ULong?,
+        val streamMaximum: ULong?
+    )
 
     private data class PendingWrite(
         val streamId: ULong,
@@ -32,6 +35,8 @@ internal class QuicFlowController(
     private var peerMaxConnectionData = 0uL
     private var peerConnectionDataSent = 0uL
     private var localConnectionDataConsumed = 0uL
+    private var localConnectionMaximum = config.limits.maxConnectionData.toULong()
+    private val localStreamMaximum = mutableMapOf<ULong, ULong>()
 
     var streamsBlocked: Long = 0
         private set
@@ -71,19 +76,33 @@ internal class QuicFlowController(
         localConnectionDataConsumed += bytes.toULong()
         val streamConsumed = (streamDataConsumed[streamId] ?: 0uL) + bytes.toULong()
         streamDataConsumed[streamId] = streamConsumed
+        val connectionTarget =
+            config.limits.maxConnectionData.toULong() + localConnectionDataConsumed
+        val streamTarget = config.limits.maxStreamData.toULong() + streamConsumed
         return ReceiveCredit(
-            connectionMaximum =
-                config.limits.maxConnectionData.toULong() + localConnectionDataConsumed,
-            streamMaximum = config.limits.maxStreamData.toULong() + streamConsumed
+            connectionMaximum = connectionTarget.takeIf {
+                it - localConnectionMaximum >= receiveThreshold(config.limits.maxConnectionData)
+            }?.also { localConnectionMaximum = it },
+            streamMaximum = streamTarget.takeIf {
+                it - (localStreamMaximum[streamId]
+                    ?: config.limits.maxStreamData.toULong()) >=
+                    receiveThreshold(config.limits.maxStreamData)
+            }?.also { localStreamMaximum[streamId] = it }
         )
     }
 
-    fun connectionCreditFrame(): QuicFrame.MaxData = QuicFrame.MaxData(
-        config.limits.maxConnectionData.toULong() + localConnectionDataConsumed
-    )
+    fun connectionCreditFrame(): QuicFrame.MaxData {
+        localConnectionMaximum =
+            config.limits.maxConnectionData.toULong() + localConnectionDataConsumed
+        return QuicFrame.MaxData(localConnectionMaximum)
+    }
 
-    fun streamCreditFrame(streamId: ULong): QuicFrame.MaxStreamData =
-        QuicFrame.MaxStreamData(streamId, config.limits.maxStreamData.toULong() + (streamDataConsumed[streamId] ?: 0uL))
+    fun streamCreditFrame(streamId: ULong): QuicFrame.MaxStreamData {
+        val maximum = config.limits.maxStreamData.toULong() +
+            (streamDataConsumed[streamId] ?: 0uL)
+        localStreamMaximum[streamId] = maximum
+        return QuicFrame.MaxStreamData(streamId, maximum)
+    }
 
     fun queue(
         streamId: ULong,
@@ -175,6 +194,9 @@ internal class QuicFlowController(
             parameters.initialMaxStreamDataBidiLocal
         }
     }
+
+    private fun receiveThreshold(window: Long): ULong =
+        maxOf(1uL, window.toULong() / 2uL)
 }
 
 private const val APPLICATION_MESSAGE_OVERHEAD = 32

@@ -8,8 +8,13 @@ import com.kerobit.kquic.KQuicSecurity
 import com.kerobit.kquic.KQuicTransportEvent
 import com.kerobit.kquic.KQuicTransportRole
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -20,6 +25,99 @@ import kotlin.test.assertTrue
 
 @OptIn(ExperimentalKQuicApi::class)
 class CommonQuicConnectionActorNetworkTest {
+    @Test
+    fun sustained_transfer_progresses_with_delayed_bidirectional_delivery() = runBlocking {
+        val services = createKQuicPlatformRuntime()
+        val network = DelayedDatagramNetwork(this, delayMs = 3)
+        val clientSocket = network.socket(42_001)
+        val serverSocket = network.socket(42_002)
+        val clientEvents = Channel<KQuicTransportEvent>(Channel.UNLIMITED)
+        val serverEvents = Channel<KQuicTransportEvent>(Channel.UNLIMITED)
+        val config = KQuicConfig(
+            initiator = true,
+            rendezvousId = "sustained-network",
+            security = KQuicSecurity.ephemeralWithAuthenticatedSignaling(),
+            connectionTimeoutMs = 10_000,
+            idleTimeoutMs = 10_000
+        )
+        val client = CommonQuicConnectionActor(
+            this,
+            clientSocket,
+            serverSocket.localAddress,
+            KQuicTransportRole.CLIENT,
+            services.crypto.ephemeralIdentityProvider.identityFor(
+                KQuicHandshakeRequest(config.rendezvousId, true)
+            ),
+            config,
+            services,
+            clientEvents::send
+        )
+        val server = CommonQuicConnectionActor(
+            this,
+            serverSocket,
+            clientSocket.localAddress,
+            KQuicTransportRole.SERVER,
+            services.crypto.ephemeralIdentityProvider.identityFor(
+                KQuicHandshakeRequest(config.rendezvousId, false)
+            ),
+            config.copy(initiator = false),
+            services,
+            serverEvents::send
+        )
+        try {
+            val serverConnected = async(start = CoroutineStart.UNDISPATCHED) { server.connect() }
+            val clientConnected = async(start = CoroutineStart.UNDISPATCHED) { client.connect() }
+            withTimeout(10_000) {
+                clientConnected.await()
+                serverConnected.await()
+            }
+
+            val payloads = List(32) { message ->
+                ByteArray(12 * 1024) { (it * 17 + message).toByte() }
+            }
+            assertTrue(client.openChannel(KQuicChannelConfig("sustained")))
+            payloads.forEach {
+                assertTrue(client.send("sustained", it, text = false))
+            }
+
+            val received = mutableListOf<ByteArray>()
+            withTimeout(15_000) {
+                while (received.size < payloads.size) {
+                    when (val event = serverEvents.receive()) {
+                        is KQuicTransportEvent.BytesReceived ->
+                            if (event.label == "sustained") received += event.payload
+                        is KQuicTransportEvent.Failed -> throw event.error
+                        else -> Unit
+                    }
+                }
+            }
+            payloads.zip(received).forEach { (expected, actual) ->
+                assertContentEquals(expected, actual)
+            }
+
+            val response = "still-progressing".encodeToByteArray()
+            assertTrue(server.send("sustained", response, text = false))
+            withTimeout(5_000) {
+                while (true) {
+                    when (val event = clientEvents.receive()) {
+                        is KQuicTransportEvent.BytesReceived -> {
+                            if (event.label == "sustained") {
+                                assertContentEquals(response, event.payload)
+                                break
+                            }
+                        }
+                        is KQuicTransportEvent.Failed -> throw event.error
+                        else -> Unit
+                    }
+                }
+            }
+        } finally {
+            client.close()
+            server.close()
+            network.close()
+        }
+    }
+
     @Test
     fun actor_recovers_from_loss_duplication_and_reordering_at_1200_byte_mtu() = runBlocking {
         val services = createKQuicPlatformRuntime()
@@ -103,6 +201,47 @@ class CommonQuicConnectionActorNetworkTest {
             client.close()
             server.close()
         }
+    }
+}
+
+private class DelayedDatagramNetwork(parentScope: CoroutineScope, private val delayMs: Long) {
+    private val scopeJob = SupervisorJob(parentScope.coroutineContext[Job])
+    private val scope = CoroutineScope(parentScope.coroutineContext + scopeJob)
+    private val mutex = Mutex()
+    private val inbound = mutableMapOf<Int, Channel<KQuicInboundDatagram>>()
+    private var sequence = 0
+
+    fun socket(port: Int): KQuicDatagramSocket {
+        val channel = Channel<KQuicInboundDatagram>(Channel.UNLIMITED)
+        inbound[port] = channel
+        return object : KQuicDatagramSocket {
+            override val localAddress = KQuicSocketAddress("127.0.0.1", port)
+
+            override suspend fun send(destination: KQuicSocketAddress, payload: ByteArray) {
+                val delivery = mutex.withLock {
+                    sequence++
+                    Triple(
+                        checkNotNull(inbound[destination.port]),
+                        KQuicInboundDatagram(localAddress, payload.copyOf()),
+                        sequence
+                    )
+                }
+                scope.launch {
+                    delay(delayMs + (delivery.third % 3))
+                    runCatching { delivery.first.send(delivery.second) }
+                }
+            }
+
+            override suspend fun receive(): KQuicInboundDatagram = channel.receive()
+
+            override fun close() {
+                channel.close()
+            }
+        }
+    }
+
+    fun close() {
+        scopeJob.cancel()
     }
 }
 

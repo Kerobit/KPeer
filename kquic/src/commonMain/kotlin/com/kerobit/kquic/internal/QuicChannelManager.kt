@@ -149,9 +149,13 @@ internal class QuicChannelManager(
             QuicChannelFrameDecoder(config.limits)
         }
         decoder.feed(received.bytes).forEach { processMessage(frame.streamId, it) }
-        enqueue(QuicFrame.MaxData(credit.connectionMaximum), false)
-        enqueue(QuicFrame.MaxStreamData(frame.streamId, credit.streamMaximum), false)
-        streamManager.updateLocalStreamLimit(frame.streamId, credit.streamMaximum)
+        credit.connectionMaximum?.let {
+            enqueue(QuicFrame.MaxData(it), false)
+        }
+        credit.streamMaximum?.let {
+            enqueue(QuicFrame.MaxStreamData(frame.streamId, it), false)
+            streamManager.updateLocalStreamLimit(frame.streamId, it)
+        }
     }
 
     suspend fun processDatagram(frame: QuicFrame.Datagram) {
