@@ -35,7 +35,7 @@ internal class QuicOffsetReassembler(
     fun add(offset: ULong, data: ByteArray, fin: Boolean = false): ByteArray {
         val end = checkedEnd(offset, data.size)
         if (end > maxOffset) {
-            throw KQuicError.ProtocolViolation("QUIC offset exceeds the configured receive limit")
+            throw KQuicError.ProtocolViolation("QUIC offset $end exceeds receive limit $maxOffset")
         }
         if (fin) {
             val existing = finalOffset

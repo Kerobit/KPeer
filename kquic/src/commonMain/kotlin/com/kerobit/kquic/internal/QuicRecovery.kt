@@ -157,7 +157,8 @@ internal class QuicRecovery(
             maxOf(latestRttMs ?: initialRttMs, smoothedRttMs ?: initialRttMs) * 9 / 8
             ).coerceAtLeast(timerGranularityMs)
         val lost = sent.values.filter {
-            (largestAcked >= it.number + packetThreshold) || nowMs - it.sentAtMs >= timeThreshold
+            it.number < largestAcked && (largestAcked >= it.number + packetThreshold ||
+                nowMs - it.sentAtMs >= timeThreshold)
         }
         if (lost.any(Sent::ackEliciting)) {
             val newestLost = lost.maxOf(Sent::sentAtMs)
@@ -183,17 +184,4 @@ internal enum class QuicPacketNumberSpace {
     INITIAL,
     HANDSHAKE,
     APPLICATION_DATA
-}
-
-internal class QuicRecoverySpaces(
-    private val create: () -> QuicRecovery = { QuicRecovery() }
-) {
-    private val spaces = QuicPacketNumberSpace.entries.associateWith { create() }.toMutableMap()
-
-    operator fun get(space: QuicPacketNumberSpace): QuicRecovery =
-        checkNotNull(spaces[space])
-
-    fun discard(space: QuicPacketNumberSpace) {
-        spaces[space] = create()
-    }
 }

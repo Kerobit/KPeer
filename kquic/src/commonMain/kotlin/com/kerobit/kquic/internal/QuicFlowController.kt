@@ -34,6 +34,8 @@ internal class QuicFlowController(
     private var remoteParameters: QuicTransportParameterValues? = null
     private var peerMaxConnectionData = 0uL
     private var peerConnectionDataSent = 0uL
+    private var connectionBlockedAt: ULong? = null
+    private val streamBlockedAt = mutableMapOf<ULong, ULong>()
     private var localConnectionDataConsumed = 0uL
     private var localConnectionMaximum = config.limits.maxConnectionData.toULong()
     private val localStreamMaximum = mutableMapOf<ULong, ULong>()
@@ -63,11 +65,13 @@ internal class QuicFlowController(
     }
 
     fun updatePeerMaxStreamData(streamId: ULong, maximum: ULong) {
+        if (maximum > (streamBlockedAt[streamId] ?: 0uL)) streamBlockedAt.remove(streamId)
         senders[streamId]?.updateMaximumData(maximum)
         drain()
     }
 
     fun updatePeerMaxData(maximum: ULong) {
+        if (maximum > (connectionBlockedAt ?: 0uL)) connectionBlockedAt = null
         peerMaxConnectionData = maxOf(peerMaxConnectionData, maximum)
         drain()
     }
@@ -170,18 +174,19 @@ internal class QuicFlowController(
         pendingWrites.clear()
     }
 
-    private fun recordBlocked(
-        streamId: ULong,
-        sender: QuicStreamSender,
-        connectionCredit: ULong
-    ) {
-        streamsBlocked++
-        if (connectionCredit == 0uL) {
+    private fun recordBlocked(streamId: ULong, sender: QuicStreamSender, connectionCredit: ULong) {
+        var newlyBlocked = false
+        if (connectionCredit == 0uL && connectionBlockedAt != peerMaxConnectionData) {
             enqueue(QuicFrame.DataBlocked(peerMaxConnectionData), false)
+            connectionBlockedAt = peerMaxConnectionData
+            newlyBlocked = true
         }
-        if (sender.availableData == 0uL) {
+        if (sender.availableData == 0uL && streamBlockedAt[streamId] != sender.maximumDataLimit) {
             enqueue(QuicFrame.StreamDataBlocked(streamId, sender.maximumDataLimit), false)
+            streamBlockedAt[streamId] = sender.maximumDataLimit
+            newlyBlocked = true
         }
+        if (newlyBlocked) streamsBlocked++
     }
 
     private fun initialPeerStreamCredit(streamId: ULong): ULong {

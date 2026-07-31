@@ -1,0 +1,4 @@
+headers = KQuicCryptoKitShim.h
+package = com.kerobit.kquic.cryptokit
+staticLibraries = libKQuicCryptoKitShim.a
+linkerOpts = -framework CryptoKit

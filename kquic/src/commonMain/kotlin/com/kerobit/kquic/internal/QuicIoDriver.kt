@@ -14,7 +14,6 @@ import kotlinx.coroutines.launch
 internal class QuicIoDriver(
     private val scope: CoroutineScope,
     private val socket: KQuicDatagramSocket,
-    private val tickIntervalMs: Long,
     private val isClosing: () -> Boolean,
     private val onInbound: suspend (KQuicInboundDatagram) -> Unit,
     private val onTick: suspend () -> Unit,
@@ -37,11 +36,14 @@ internal class QuicIoDriver(
                 if (!isClosing()) onFailure(error)
             }
         }
+    }
+
+    fun scheduleTick(delayMs: Long) {
+        if (closed || isClosing()) return
+        tickJob?.cancel()
         tickJob = scope.launch {
-            while (isActive && !isClosing()) {
-                delay(tickIntervalMs)
-                onTick()
-            }
+            delay(delayMs.coerceAtLeast(0))
+            if (isActive && !isClosing()) onTick()
         }
     }
 

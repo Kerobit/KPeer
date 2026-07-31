@@ -39,6 +39,9 @@ class QuicFlowControllerTest {
         assertEquals(1, controller.streamsBlocked)
         assertIs<QuicFrame.DataBlocked>(frames[0])
         assertIs<QuicFrame.StreamDataBlocked>(frames[1])
+        controller.drain()
+        assertEquals(2, frames.size)
+        assertEquals(1, controller.streamsBlocked)
         assertNull(controller.reserve(2_000_000))
     }
 

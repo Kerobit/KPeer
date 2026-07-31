@@ -82,7 +82,6 @@ internal class CommonQuicConnectionActor(
     private val ioDriver = QuicIoDriver(
         scope = scope,
         socket = socket,
-        tickIntervalMs = TICK_INTERVAL_MS,
         isClosing = { core.closing },
         onInbound = {
             if (!StunProtocol.isStun(it.payload) && it.source == remoteAddress) {
@@ -97,6 +96,7 @@ internal class CommonQuicConnectionActor(
     private val initialHostAddresses = platformRuntime.network.hostAddresses().sorted()
 
     private val packetSpaces = QuicPacketSpaces()
+    private val pacer = QuicPacer()
     private var queuedFrameBytes = 0
     private val channelManager = QuicChannelManager(
         endpointRole = endpointRole,
@@ -171,13 +171,14 @@ internal class CommonQuicConnectionActor(
     private suspend fun runActor() {
         try {
             if (endpointRole == QuicEndpointRole.CLIENT) initializeClient()
+            scheduleNextTick(flush())
             for (command in commands) {
                 when (command) {
                     is ActorCommand.Core -> applyCoreCommand(command.command)
                     is ActorCommand.GetStats -> command.reply.complete(currentStats())
                     is ActorCommand.Fatal -> throw command.error
                 }
-                flush()
+                scheduleNextTick(flush())
                 if (closing) return
             }
         } catch (error: CancellationException) {
@@ -213,7 +214,6 @@ internal class CommonQuicConnectionActor(
         installInitialKeys(destinationId)
         handshake.initialize(originalDestinationConnectionId)
         handleTlsEvents(handshake.start())
-        flush()
     }
 
     private fun initializeServer(invariant: QuicInvariantHeader.Long) {
@@ -489,7 +489,8 @@ internal class CommonQuicConnectionActor(
         channelManager.drain()
     }
 
-    private suspend fun flush() {
+    private suspend fun flush(): Long? {
+        var pacingDeadlineMs: Long? = null
         for (level in listOf(
             QuicEncryptionLevel.INITIAL,
             QuicEncryptionLevel.HANDSHAKE,
@@ -514,6 +515,20 @@ internal class CommonQuicConnectionActor(
                     queue.addFirst(queued)
                     queuedFrameBytes += queued.estimatedBytes
                     break
+                }
+                val now = nowMs()
+                if (level == QuicEncryptionLevel.ONE_RTT && frame.isAckEliciting() &&
+                    !queued.bypassCongestion) {
+                    val pacingDelay = pacer.delayMs(
+                        now, estimatedPacketSize, recoverySpace.congestionWindow,
+                        recoverySpace.smoothedRttMs
+                    )
+                    if (pacingDelay > 0) {
+                        queue.addFirst(queued)
+                        queuedFrameBytes += queued.estimatedBytes
+                        pacingDeadlineMs = now + pacingDelay
+                        break
+                    }
                 }
                 val packetNumber = packetSpace.nextPacketNumber
                 packetSpace.nextPacketNumber = packetNumber + 1uL
@@ -547,8 +562,15 @@ internal class CommonQuicConnectionActor(
                         keys = keys
                     )
                 }
-                val outgoing = checkNotNull(core.transmit(remoteAddress, packet, nowMs()))
+                val outgoing = checkNotNull(core.transmit(remoteAddress, packet, now))
                 applyCoreEffect(outgoing)
+                if (level == QuicEncryptionLevel.ONE_RTT && frame.isAckEliciting() &&
+                    !queued.bypassCongestion) {
+                    pacer.onPacketSent(
+                        outgoing.sentAtMs, packet.size, recoverySpace.congestionWindow,
+                        recoverySpace.smoothedRttMs
+                    )
+                }
                 recoverySpace.onPacketSent(
                     number = packetNumber,
                     sentAtMs = outgoing.sentAtMs,
@@ -573,6 +595,20 @@ internal class CommonQuicConnectionActor(
                 }
             }
         }
+        return pacingDeadlineMs
+    }
+
+    private fun scheduleNextTick(pacingDeadlineMs: Long?) {
+        val deadlines = buildList {
+            core.nextDeadlineMs()?.let(::add)
+            pacingDeadlineMs?.let(::add)
+            packetSpaces.values.forEach { packetSpace ->
+                packetSpace.ackTracker.takeIf { it.hasPendingAck }?.ackDeadlineMs?.let(::add)
+                packetSpace.recovery.lossDeadlineMs(nowMs()).takeUnless {
+                    it == Long.MAX_VALUE }?.let(::add)
+            }
+        }
+        deadlines.minOrNull()?.let { ioDriver.scheduleTick(it - nowMs()) }
     }
 
     private fun enqueue(
@@ -693,5 +729,3 @@ private const val PACKET_OVERHEAD = 64
 private const val NETWORK_CHECK_INTERVAL_MS = 1_000L
 private const val MAX_FRAME_PAYLOAD = 1_150
 private const val LOCAL_ACK_DELAY_EXPONENT = 3
-private const val TICK_INTERVAL_MS = 10L
-private const val APPLICATION_MESSAGE_OVERHEAD = 32

@@ -2,36 +2,67 @@ package com.kerobit.kquic.internal
 
 internal data class QuicProtectionPair(val read: QuicPacketProtectionKeys, val write: QuicPacketProtectionKeys)
 
-internal data class QuicQueuedFrame(
-    val frame: QuicFrame,
-    val estimatedBytes: Int,
-    val bypassCongestion: Boolean = false
-) {
+internal data class QuicQueuedFrame(val frame: QuicFrame, val estimatedBytes: Int,
+                                    val bypassCongestion: Boolean = false) {
     fun canSend(recovery: QuicRecovery, packetBytes: Int): Boolean =
         bypassCongestion || recovery.canSend(packetBytes)
 }
 
 internal class QuicFrameSendQueue {
     private val priority = ArrayDeque<QuicQueuedFrame>()
-    private val regular = ArrayDeque<QuicQueuedFrame>()
-    val isNotEmpty: Boolean get() = priority.isNotEmpty() || regular.isNotEmpty()
+    private val control = ArrayDeque<QuicQueuedFrame>()
+    private val application = mutableMapOf<ULong, ArrayDeque<QuicQueuedFrame>>()
+    private val applicationOrder = ArrayDeque<ULong>()
+    val isNotEmpty: Boolean get() = priority.isNotEmpty() || control.isNotEmpty() || applicationOrder.isNotEmpty()
 
     fun addLast(frame: QuicQueuedFrame) {
-        if (frame.bypassCongestion) priority.addLast(frame) else regular.addLast(frame)
+        when {
+            frame.bypassCongestion -> priority.addLast(frame)
+            frame.frame.applicationQueueKey() == null -> control.addLast(frame)
+            else -> addApplication(frame, first = false)
+        }
     }
 
     fun addFirst(frame: QuicQueuedFrame) {
-        if (frame.bypassCongestion) priority.addFirst(frame) else regular.addFirst(frame)
+        when {
+            frame.bypassCongestion -> priority.addFirst(frame)
+            frame.frame.applicationQueueKey() == null -> control.addFirst(frame)
+            else -> addApplication(frame, first = true)
+        }
     }
 
-    fun removeFirst(): QuicQueuedFrame =
-        if (priority.isNotEmpty()) priority.removeFirst() else regular.removeFirst()
+    fun removeFirst(): QuicQueuedFrame {
+        if (priority.isNotEmpty()) return priority.removeFirst()
+        if (control.isNotEmpty()) return control.removeFirst()
+        val key = applicationOrder.removeFirst()
+        val frames = checkNotNull(application[key])
+        val frame = frames.removeFirst()
+        if (frames.isEmpty()) application.remove(key) else applicationOrder.addLast(key)
+        return frame
+    }
+
+    private fun addApplication(frame: QuicQueuedFrame, first: Boolean) {
+        val key = checkNotNull(frame.frame.applicationQueueKey())
+        val frames = application.getOrPut(key) {
+            if (first) applicationOrder.addFirst(key) else applicationOrder.addLast(key)
+            ArrayDeque()
+        }
+        if (first) {
+            frames.addFirst(frame)
+            applicationOrder.remove(key)
+            applicationOrder.addFirst(key)
+        } else frames.addLast(frame)
+    }
+}
+
+private fun QuicFrame.applicationQueueKey(): ULong? = when (this) {
+    is QuicFrame.Stream -> streamId
+    is QuicFrame.Datagram -> ULong.MAX_VALUE
+    else -> null
 }
 
 /** All mutable state that belongs to one QUIC packet-number space. */
-internal class QuicPacketSpaceState internal constructor(
-    val numberSpace: QuicPacketNumberSpace
-) {
+internal class QuicPacketSpaceState internal constructor(val numberSpace: QuicPacketNumberSpace) {
     val encryptionLevel: QuicEncryptionLevel = numberSpace.encryptionLevel
     var protection: QuicProtectionPair? = null
     var nextPacketNumber: ULong = 0uL

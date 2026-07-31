@@ -128,7 +128,9 @@ internal class QuicChannelManager(
     }
 
     fun peerBlockedOnStream(streamId: ULong) {
-        enqueue(flowController.streamCreditFrame(streamId), false)
+        val credit = flowController.streamCreditFrame(streamId)
+        streamManager.updateLocalStreamLimit(streamId, credit.maximumStreamData)
+        enqueue(credit, false)
     }
 
     fun peerBlockedOnStreams() {
