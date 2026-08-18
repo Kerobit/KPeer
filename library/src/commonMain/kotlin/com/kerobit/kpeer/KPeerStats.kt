@@ -39,37 +39,71 @@ data class KPeerNetworkStats(
 )
 
 fun KPeerStatsReport.toNetworkStats(): KPeerNetworkStats {
-    val selectedPair = stats.firstOrNull { stat ->
-        stat.type.contains("candidate-pair", ignoreCase = true) &&
-            (stat.bool("selected") || stat.bool("nominated") || stat.str("state") == "succeeded")
-    } ?: stats.firstOrNull { it.type.contains("candidate-pair", ignoreCase = true) }
+    val transport = stats.firstOrNull { stat ->
+        stat.type.equals("transport", ignoreCase = true) &&
+            stat.str("selectedCandidatePairId").isNotEmpty()
+    } ?: stats.firstOrNull { it.type.equals("transport", ignoreCase = true) }
+    val selectedPairId = transport?.str("selectedCandidatePairId").orEmpty()
+    val selectedPair = stats.firstOrNull { it.id == selectedPairId }?.takeIf { it.isCandidatePair() }
+        ?: stats.firstOrNull { stat ->
+            stat.isCandidatePair() && (stat.bool("selected") || stat.bool("nominated"))
+        }
+        ?: stats.firstOrNull { stat ->
+            stat.isCandidatePair() && stat.str("state").equals("succeeded", ignoreCase = true)
+        }
 
-    val allBytesSent = stats.sumOf { it.long("bytesSent") }
-    val allBytesReceived = stats.sumOf { it.long("bytesReceived") }
-    val packetsSent = stats.sumOf { it.long("packetsSent") }
-    val packetsReceived = stats.sumOf { it.long("packetsReceived") }
-    val packetsLost = stats.sumOf { it.long("packetsLost") }
-    val jitterMs = stats.maxOfOrNull { secondsToMs(it.num("jitter")) } ?: 0
-    val rttMs = selectedPair?.let {
-        secondsToMs(it.num("currentRoundTripTime").takeIf { value -> value > 0.0 } ?: it.num("totalRoundTripTime"))
-    } ?: 0
-    val relayBytes = stats
-        .filter { stat -> stat.type.contains("candidate", ignoreCase = true) && stat.str("candidateType") == "relay" }
-        .sumOf { it.long("bytesSent") + it.long("bytesReceived") }
+    // Candidate-pair and transport reports describe the same underlying traffic. Prefer the
+    // selected pair and use the transport only as a platform fallback; summing the whole report
+    // would double count bytes and packets when both objects are present.
+    val counterSource = selectedPair ?: transport
+    val localCandidate = selectedPair
+        ?.str("localCandidateId")
+        ?.takeIf(String::isNotEmpty)
+        ?.let { id -> stats.firstOrNull { it.id == id } }
+    val remoteCandidate = selectedPair
+        ?.str("remoteCandidateId")
+        ?.takeIf(String::isNotEmpty)
+        ?.let { id -> stats.firstOrNull { it.id == id } }
+    val usesRelay = localCandidate.isRelayCandidate() || remoteCandidate.isRelayCandidate()
+    val currentRttSeconds = selectedPair?.num("currentRoundTripTime") ?: 0.0
+    val responsesReceived = selectedPair?.long("responsesReceived") ?: 0L
+    val averageRttSeconds = if (responsesReceived > 0) {
+        (selectedPair?.num("totalRoundTripTime") ?: 0.0) / responsesReceived.toDouble()
+    } else {
+        0.0
+    }
+    val rttSeconds = currentRttSeconds.takeIf { it > 0.0 }
+        ?: averageRttSeconds.takeIf { it > 0.0 }
+        ?: 0.0
 
     return KPeerNetworkStats(
         selectedCandidatePairId = selectedPair?.id.orEmpty(),
-        connectionMode = if (relayBytes > 0) "relay" else if (selectedPair != null) "direct" else "",
-        rttMs = rttMs,
-        jitterMs = jitterMs,
-        packetsSent = packetsSent,
-        packetsReceived = packetsReceived,
-        packetsLost = packetsLost,
-        bytesSent = allBytesSent,
-        bytesReceived = allBytesReceived,
-        relayBytes = relayBytes,
+        connectionMode = when {
+            selectedPair == null -> ""
+            usesRelay -> "relay"
+            else -> "direct"
+        },
+        rttMs = secondsToMs(rttSeconds),
+        jitterMs = secondsToMs(selectedPair?.num("jitter") ?: 0.0),
+        packetsSent = counterSource?.long("packetsSent") ?: 0,
+        packetsReceived = counterSource?.long("packetsReceived") ?: 0,
+        packetsLost = counterSource?.long("packetsLost") ?: 0,
+        bytesSent = counterSource?.long("bytesSent") ?: 0,
+        bytesReceived = counterSource?.long("bytesReceived") ?: 0,
+        relayBytes = if (usesRelay) {
+            (counterSource?.long("bytesSent") ?: 0) + (counterSource?.long("bytesReceived") ?: 0)
+        } else {
+            0
+        },
     )
 }
+
+private fun KPeerStat.isCandidatePair(): Boolean =
+    type.equals("candidate-pair", ignoreCase = true) ||
+        type.equals("candidate_pair", ignoreCase = true)
+
+private fun KPeerStat?.isRelayCandidate(): Boolean =
+    this?.str("candidateType")?.equals("relay", ignoreCase = true) == true
 
 private fun KPeerStat.long(key: String): Long = num(key).toLong().coerceAtLeast(0)
 private fun KPeerStat.num(key: String): Double = (values[key] as? KPeerStatValue.Num)?.value ?: 0.0

@@ -115,6 +115,24 @@ This target is intended for browser environments where `RTCPeerConnection` and `
 - `KPeerSignal` is the payload exchanged through your signaling backend
 - `KSubscription` is a small cancellable handle for callback subscriptions
 
+## Connection statistics
+
+`KPeer.getStats()` returns the cross-platform raw WebRTC report. Call
+`toNetworkStats()` when an integration needs one normalized snapshot for the active ICE path:
+
+```kotlin
+val network = peer.getStats().toNetworkStats()
+println("${network.connectionMode}: ${network.bytesSent} bytes sent")
+```
+
+The normalized snapshot follows `RTCTransportStats.selectedCandidatePairId` to the active
+`RTCIceCandidatePairStats`, then resolves its local and remote candidates to distinguish a direct
+path from TURN relay. Counters come from that selected pair (or the transport as a fallback); they
+are not summed across the full report because several RTC stats objects can describe the same
+traffic. This normalization follows the object relationships in the
+[W3C WebRTC Stats specification](https://www.w3.org/TR/webrtc-stats/). Unsupported platform values
+remain at their documented zero/empty defaults.
+
 ## Creating a peer
 
 ```kotlin
