@@ -117,19 +117,30 @@ This target is intended for browser environments where `RTCPeerConnection` and `
 
 ## Connection statistics
 
-`KPeer.getStats()` returns the cross-platform raw WebRTC report. Call
-`toNetworkStats()` when an integration needs one normalized snapshot for the active ICE path:
+`KPeer.getStats()` returns the cross-platform raw WebRTC report. Read structured views from the
+report when an integration needs normalized counters instead of the raw objects:
 
 ```kotlin
-val network = peer.getStats().toNetworkStats()
-println("${network.connectionMode}: ${network.bytesSent} bytes sent")
+val report = peer.getStats()
+val path = report.pathStats       // active ICE / transport path
+val quality = report.qualityStats // jitter, loss, and related counters
+println("${path.connectionMode}: ${path.bytesSent} path bytes, jitter ${quality.jitterMs} ms")
 ```
 
-The normalized snapshot follows `RTCTransportStats.selectedCandidatePairId` to the active
+`KPeerStatsReport.normalizedStats` returns both views from one report when an integration needs
+them together.
+
+`pathStats` follows `RTCTransportStats.selectedCandidatePairId` to the active
 `RTCIceCandidatePairStats`, then resolves its local and remote candidates to distinguish a direct
-path from TURN relay. Counters come from that selected pair (or the transport as a fallback); they
-are not summed across the full report because several RTC stats objects can describe the same
-traffic. This normalization follows the object relationships in the
+path from TURN relay. Path counters come from that selected pair (or the transport as a fallback);
+they are not summed across the full report because transport and candidate-pair describe the same
+traffic.
+
+`qualityStats` reads jitter, loss, and related byte/packet counters from `inbound-rtp` /
+`outbound-rtp` objects when the platform exposes them. KPeer is data-channel oriented; these are
+connection-quality signals from the WebRTC stats graph, not A/V media metrics.
+
+This normalization follows the object relationships in the
 [W3C WebRTC Stats specification](https://www.w3.org/TR/webrtc-stats/). Unsupported platform values
 remain at their documented zero/empty defaults.
 

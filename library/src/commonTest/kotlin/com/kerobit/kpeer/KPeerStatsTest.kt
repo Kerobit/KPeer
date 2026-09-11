@@ -27,10 +27,12 @@ class KPeerStatsTest {
             )
         )
 
-        val result = report.toNetworkStats()
+        val result = report.pathStats
 
         assertEquals("pair-b", result.selectedCandidatePairId)
         assertEquals("direct", result.connectionMode)
+        assertEquals("host", result.localCandidateType)
+        assertEquals("srflx", result.remoteCandidateType)
         assertEquals(300L, result.bytesSent)
         assertEquals(400L, result.bytesReceived)
         assertEquals(30L, result.packetsSent)
@@ -56,9 +58,10 @@ class KPeerStatsTest {
             )
         )
 
-        val result = report.toNetworkStats()
+        val result = report.pathStats
 
         assertEquals("relay", result.connectionMode)
+        assertEquals("relay", result.localCandidateType)
         assertEquals(3_000L, result.relayBytes)
     }
 
@@ -76,7 +79,7 @@ class KPeerStatsTest {
             )
         )
 
-        assertEquals(300L, report.toNetworkStats().rttMs)
+        assertEquals(300L, report.pathStats.rttMs)
     }
 
     @Test
@@ -87,11 +90,62 @@ class KPeerStatsTest {
             )
         )
 
-        val result = report.toNetworkStats()
+        val result = report.pathStats
 
         assertEquals("", result.connectionMode)
         assertEquals(50L, result.bytesSent)
         assertEquals(75L, result.bytesReceived)
+    }
+
+    @Test
+    fun `quality stats come from rtp objects not the ice path`() {
+        val report = KPeerStatsReport(
+            listOf(
+                stat(
+                    "pair",
+                    "candidate-pair",
+                    "nominated" to bool(true),
+                    "bytesSent" to num(9_000),
+                    "packetsSent" to num(900),
+                    "jitter" to num(0.5),
+                    "packetsLost" to num(50),
+                ),
+                stat(
+                    "in-1",
+                    "inbound-rtp",
+                    "jitter" to num(0.012),
+                    "packetsLost" to num(3),
+                    "packetsReceived" to num(100),
+                    "bytesReceived" to num(1_000),
+                ),
+                stat(
+                    "in-2",
+                    "inbound-rtp",
+                    "jitter" to num(0.040),
+                    "packetsLost" to num(2),
+                    "packetsReceived" to num(80),
+                    "bytesReceived" to num(800),
+                ),
+                stat(
+                    "out-1",
+                    "outbound-rtp",
+                    "packetsSent" to num(120),
+                    "bytesSent" to num(1_200),
+                ),
+            )
+        )
+
+        val quality = report.qualityStats
+        val path = report.pathStats
+
+        assertEquals(40L, quality.jitterMs)
+        assertEquals(5L, quality.packetsLost)
+        assertEquals(180L, quality.packetsReceived)
+        assertEquals(1_800L, quality.bytesReceived)
+        assertEquals(120L, quality.packetsSent)
+        assertEquals(1_200L, quality.bytesSent)
+        assertEquals(9_000L, path.bytesSent)
+        assertEquals(900L, path.packetsSent)
     }
 
     private fun stat(id: String, type: String, vararg values: Pair<String, KPeerStatValue>) =
