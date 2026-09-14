@@ -6,10 +6,8 @@ import com.kerobit.kpeer.KChannelConfig
 import com.kerobit.kpeer.KPeerConnectionState
 import com.kerobit.kpeer.KPeerContext
 import com.kerobit.kpeer.KPeerIceCandidate
-import com.kerobit.kpeer.KPeerSignal
 import com.kerobit.kpeer.KPeerSdpType
 import com.kerobit.kpeer.KPeerStat
-import com.kerobit.kpeer.KPeerStatValue
 import com.kerobit.kpeer.KPeerStatsReport
 import com.kerobit.kpeer.internal.TransportConfig
 import cocoapods.WebRTC_SDK.*
@@ -44,12 +42,37 @@ private object PeerConnectionHolder {
 }
 
 internal actual class NativePeerConnection actual constructor(
-    config: TransportConfig,
+    private val config: TransportConfig,
     context: KPeerContext
 ) {
-    private val delegateImpl = PeerConnectionDelegate(this)
+    private val localIceCandidatesChannel = Channel<KPeerIceCandidate>(Channel.UNLIMITED)
+    actual val localIceCandidates: Flow<KPeerIceCandidate> = localIceCandidatesChannel.receiveAsFlow()
 
-    private val peerConnection: RTCPeerConnection = run {
+    private val _connectionState = MutableStateFlow(KPeerConnectionState.CONNECTING)
+    actual val connectionState: Flow<KPeerConnectionState> = _connectionState.asStateFlow()
+
+    actual val currentConnectionState: KPeerConnectionState
+        get() = _connectionState.value
+
+    private val _incomingDataChannels = MutableSharedFlow<NativeDataChannel>(extraBufferCapacity = 8)
+    actual val incomingDataChannels: Flow<NativeDataChannel> = _incomingDataChannels.asSharedFlow()
+    private val _negotiationNeeded = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+    actual val negotiationNeeded: Flow<Unit> = _negotiationNeeded.asSharedFlow()
+
+    private val iceCandidateBuffer = IceCandidateBuffer<RTCIceCandidate>()
+
+    private var peerConnection: RTCPeerConnection? = null
+    private var delegateImpl: PeerConnectionDelegate? = null
+
+    private val _peerConnection: RTCPeerConnection
+        get() = peerConnection ?: throw IllegalStateException("PeerConnection not started")
+
+    actual fun startPeerConnection() {
+        if (peerConnection != null) return
+
+        val delegate = PeerConnectionDelegate(this)
+        delegateImpl = delegate
+
         val factory = PeerConnectionHolder.getOrInit()
         val iceServers = config.iceServers.map { server ->
             if (server.username != null && server.credential != null) {
@@ -71,35 +94,20 @@ internal actual class NativePeerConnection actual constructor(
             mandatoryConstraints = null,
             optionalConstraints = null
         )
-        factory.peerConnectionWithConfiguration(
+        peerConnection = factory.peerConnectionWithConfiguration(
             configuration = rtcConfig,
             constraints = constraints,
-            delegate = delegateImpl
+            delegate = delegate
         ) ?: throw IllegalStateException("Failed to create RTCPeerConnection")
     }
-
-    private val localIceCandidatesChannel = Channel<KPeerIceCandidate>(Channel.UNLIMITED)
-    actual val localIceCandidates: Flow<KPeerIceCandidate> = localIceCandidatesChannel.receiveAsFlow()
-
-    private val _connectionState = MutableStateFlow(KPeerConnectionState.CONNECTING)
-    actual val connectionState: Flow<KPeerConnectionState> = _connectionState.asStateFlow()
-
-    actual val currentConnectionState: KPeerConnectionState
-        get() = _connectionState.value
-
-    private val _incomingDataChannels = MutableSharedFlow<NativeDataChannel>(extraBufferCapacity = 8)
-    actual val incomingDataChannels: Flow<NativeDataChannel> = _incomingDataChannels.asSharedFlow()
-    private val _negotiationNeeded = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
-    actual val negotiationNeeded: Flow<Unit> = _negotiationNeeded.asSharedFlow()
-
-    private val iceCandidateBuffer = IceCandidateBuffer<RTCIceCandidate>()
 
     actual suspend fun createOffer(): String = suspendCoroutine { cont ->
         val constraints = RTCMediaConstraints(
             mandatoryConstraints = null,
             optionalConstraints = null
         )
-        peerConnection.offerForConstraints(constraints) { sdp, error ->
+        val connection = _peerConnection
+        connection.offerForConstraints(constraints) { sdp, error ->
             if (error != null) {
                 cont.resumeWithException(Exception("Failed to create offer: ${error.localizedDescription}"))
                 return@offerForConstraints
@@ -108,7 +116,7 @@ internal actual class NativePeerConnection actual constructor(
                 cont.resumeWithException(Exception("Offer SDP is null"))
                 return@offerForConstraints
             }
-            peerConnection.setLocalDescription(sdp) { setError ->
+            connection.setLocalDescription(sdp) { setError ->
                 if (setError != null) {
                     cont.resumeWithException(Exception("Failed to set local description: ${setError.localizedDescription}"))
                 } else {
@@ -123,7 +131,8 @@ internal actual class NativePeerConnection actual constructor(
             mandatoryConstraints = null,
             optionalConstraints = null
         )
-        peerConnection.answerForConstraints(constraints) { sdp, error ->
+        val connection = _peerConnection
+        connection.answerForConstraints(constraints) { sdp, error ->
             if (error != null) {
                 cont.resumeWithException(Exception("Failed to create answer: ${error.localizedDescription}"))
                 return@answerForConstraints
@@ -132,7 +141,7 @@ internal actual class NativePeerConnection actual constructor(
                 cont.resumeWithException(Exception("Answer SDP is null"))
                 return@answerForConstraints
             }
-            peerConnection.setLocalDescription(sdp) { setError ->
+            connection.setLocalDescription(sdp) { setError ->
                 if (setError != null) {
                     cont.resumeWithException(Exception("Failed to set local description: ${setError.localizedDescription}"))
                 } else {
@@ -151,12 +160,13 @@ internal actual class NativePeerConnection actual constructor(
             KPeerSdpType.ANSWER -> RTCSdpType.RTCSdpTypeAnswer
         }
         val sessionDescription = RTCSessionDescription(type = rtcType, sdp = sdp)
-        peerConnection.setRemoteDescription(sessionDescription) { error ->
+        val connection = _peerConnection
+        connection.setRemoteDescription(sessionDescription) { error ->
             if (error != null) {
                 cont.resumeWithException(Exception("Failed to set remote description: ${error.localizedDescription}"))
             } else {
                 iceCandidateBuffer.markRemoteDescriptionSetAndFlush { candidate ->
-                    peerConnection.addIceCandidate(candidate, completionHandler = {})
+                    connection.addIceCandidate(candidate, completionHandler = {})
                 }
                 cont.resume(Unit)
             }
@@ -170,13 +180,13 @@ internal actual class NativePeerConnection actual constructor(
             sdpMid = candidate.sdpMid
         )
         iceCandidateBuffer.queueOrAdd(iceCandidate) { nativeCandidate ->
-            peerConnection.addIceCandidate(nativeCandidate, completionHandler = {})
+            _peerConnection.addIceCandidate(nativeCandidate, completionHandler = {})
         }
     }
 
     actual suspend fun getStats(): KPeerStatsReport = suspendCoroutine { cont ->
         try {
-            peerConnection.statisticsWithCompletionHandler { report ->
+            _peerConnection.statisticsWithCompletionHandler { report ->
                 if (report == null) {
                     cont.resume(KPeerStatsReport(stats = emptyList()))
                     return@statisticsWithCompletionHandler
@@ -189,7 +199,9 @@ internal actual class NativePeerConnection actual constructor(
     }
 
     actual fun close() {
-        peerConnection.close()
+        peerConnection?.close()
+        peerConnection = null
+        delegateImpl = null
         localIceCandidatesChannel.close()
         _connectionState.value = KPeerConnectionState.DISCONNECTED
     }
@@ -234,7 +246,7 @@ internal actual class NativePeerConnection actual constructor(
             isOrdered = controlParams.ordered
             controlParams.maxRetransmitsOrNull?.let { maxRetransmits = it }
         }
-        return peerConnection.dataChannelForLabel(config.label, configuration = controlConfig)?.let { dc ->
+        return _peerConnection.dataChannelForLabel(config.label, configuration = controlConfig)?.let { dc ->
             // Apple platforms: bufferedAmountLowThreshold support varies by WebRTC build.
             NativeDataChannel(dc)
         }

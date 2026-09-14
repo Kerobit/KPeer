@@ -3,7 +3,6 @@ package com.kerobit.kpeer.internal.nativeP2P
 import com.kerobit.kpeer.KPeerConnectionState
 import com.kerobit.kpeer.KPeerContext
 import com.kerobit.kpeer.KPeerIceCandidate
-import com.kerobit.kpeer.KPeerSignal
 import com.kerobit.kpeer.KPeerSdpType
 import com.kerobit.kpeer.KPeerStatsReport
 import com.kerobit.kpeer.KChannelConfig
@@ -20,6 +19,7 @@ internal expect class NativePeerConnection(
     val incomingDataChannels: Flow<NativeDataChannel>
     val negotiationNeeded: Flow<Unit>
 
+    fun startPeerConnection()
     suspend fun createOffer(): String
     suspend fun createAnswer(): String
     suspend fun setRemoteDescription(type: KPeerSdpType, sdp: String)

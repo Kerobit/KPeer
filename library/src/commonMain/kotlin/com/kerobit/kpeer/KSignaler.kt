@@ -126,6 +126,8 @@ internal class KSignaler(
                         logger.warn("Ignoring ICE candidate with null sdpMLineIndex")
                         return
                     }
+                    // Candidates may arrive before the first offer on the answering side.
+                    ensureStarted()
                     // Buffering (if any) is handled by the native transport layer.
                     connection.addIceCandidate(remote)
                 }

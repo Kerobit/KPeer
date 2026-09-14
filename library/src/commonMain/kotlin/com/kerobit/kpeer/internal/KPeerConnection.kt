@@ -52,6 +52,7 @@ internal class KPeerConnection(
     fun startConnect() {
         if (started) return
         started = true
+        nativePeerConnection.startPeerConnection()
 
         // Keep track of whether a connection-level timeout already fired.
         // Once this happens, we must not override the FAILED state with later

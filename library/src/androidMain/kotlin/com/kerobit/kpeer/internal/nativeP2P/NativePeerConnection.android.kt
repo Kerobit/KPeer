@@ -5,10 +5,8 @@ import com.kerobit.kpeer.KChannelConfig
 import com.kerobit.kpeer.KPeerConnectionState
 import com.kerobit.kpeer.KPeerContext
 import com.kerobit.kpeer.KPeerIceCandidate
-import com.kerobit.kpeer.KPeerSignal
 import com.kerobit.kpeer.KPeerSdpType
 import com.kerobit.kpeer.KPeerStat
-import com.kerobit.kpeer.KPeerStatValue
 import com.kerobit.kpeer.KPeerStatsReport
 import com.kerobit.kpeer.internal.TransportConfig
 import kotlinx.coroutines.channels.Channel
@@ -41,53 +39,9 @@ private object PeerConnectionHolder {
 }
 
 internal actual class NativePeerConnection actual constructor(
-    config: TransportConfig,
-    context: KPeerContext
+    private val config: TransportConfig,
+    private val context: KPeerContext
 ) {
-    private val peerConnection: PeerConnection = run {
-        val androidContext = context.platformContext as? Context
-            ?: throw IllegalArgumentException("Android Context required for NativePeerConnection")
-        val factory = PeerConnectionHolder.getOrInit(androidContext)
-        val iceServers = config.iceServers.map { server ->
-            val builder = PeerConnection.IceServer.builder(server.url)
-            server.username?.let { builder.setUsername(it) }
-            server.credential?.let { builder.setPassword(it) }
-            builder.createIceServer()
-        }
-        val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
-            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-        }
-        var self: NativePeerConnection? = null
-        val observer = object : PeerConnection.Observer {
-            override fun onIceCandidate(candidate: IceCandidate?) {
-                candidate?.let { self?.onIceCandidate(it) }
-            }
-            override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
-            override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
-            override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-                state?.let { self?.onConnectionStateChange(it) }
-            }
-            override fun onIceConnectionReceivingChange(receiving: Boolean) {}
-            override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
-                if (state == PeerConnection.IceGatheringState.COMPLETE) self?.onIceGatheringComplete()
-            }
-            override fun onAddStream(stream: MediaStream?) {}
-            override fun onRemoveStream(stream: MediaStream?) {}
-            override fun onDataChannel(channel: DataChannel?) {
-                channel?.let { self?.onDataChannel(it) }
-            }
-            override fun onRenegotiationNeeded() {
-                self?.onNegotiationNeeded()
-            }
-            override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {}
-        }
-        val pc = factory.createPeerConnection(rtcConfig, observer)
-            ?: throw IllegalStateException("Failed to create PeerConnection")
-        self = this@NativePeerConnection
-        pc
-    }
-
     private val localIceCandidatesChannel = Channel<KPeerIceCandidate>(Channel.UNLIMITED)
     actual val localIceCandidates: Flow<KPeerIceCandidate> = localIceCandidatesChannel.receiveAsFlow()
 
@@ -104,12 +58,37 @@ internal actual class NativePeerConnection actual constructor(
 
     private val iceCandidateBuffer = IceCandidateBuffer<IceCandidate>()
 
+    private var peerConnection: PeerConnection? = null
+
+    private val _peerConnection: PeerConnection
+        get() = peerConnection ?: throw IllegalStateException("PeerConnection not started")
+
+    actual fun startPeerConnection() {
+        if (peerConnection != null) return
+
+        val androidContext = context.platformContext as? Context
+            ?: throw IllegalArgumentException("Android Context required for NativePeerConnection")
+        val factory = PeerConnectionHolder.getOrInit(androidContext)
+        val iceServers = config.iceServers.map { server ->
+            val builder = PeerConnection.IceServer.builder(server.url)
+            server.username?.let { builder.setUsername(it) }
+            server.credential?.let { builder.setPassword(it) }
+            builder.createIceServer()
+        }
+        val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
+            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+        }
+        peerConnection = factory.createPeerConnection(rtcConfig, PeerConnectionObserver(this))
+            ?: throw IllegalStateException("Failed to create PeerConnection")
+    }
+
     actual suspend fun createOffer(): String = suspendCoroutine { cont ->
         val constraints = MediaConstraints()
-        peerConnection.createOffer(object : SdpObserver {
+        _peerConnection.createOffer(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription?) {
                 sdp?.let {
-                    peerConnection.setLocalDescription(object : SdpObserver {
+                    _peerConnection.setLocalDescription(object : SdpObserver {
                         override fun onCreateSuccess(sdp: SessionDescription?) {}
                         override fun onSetSuccess() {
                             cont.resume(it.description)
@@ -131,10 +110,10 @@ internal actual class NativePeerConnection actual constructor(
 
     actual suspend fun createAnswer(): String = suspendCoroutine { cont ->
         val constraints = MediaConstraints()
-        peerConnection.createAnswer(object : SdpObserver {
+        _peerConnection.createAnswer(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription?) {
                 sdp?.let {
-                    peerConnection.setLocalDescription(object : SdpObserver {
+                    _peerConnection.setLocalDescription(object : SdpObserver {
                         override fun onCreateSuccess(sdp: SessionDescription?) {}
                         override fun onSetSuccess() {
                             cont.resume(it.description)
@@ -163,11 +142,11 @@ internal actual class NativePeerConnection actual constructor(
             KPeerSdpType.ANSWER -> SessionDescription.Type.ANSWER
         }
         val sessionDescription = SessionDescription(rtcType, sdp)
-        peerConnection.setRemoteDescription(object : SdpObserver {
+        _peerConnection.setRemoteDescription(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription?) {}
             override fun onSetSuccess() {
                 iceCandidateBuffer.markRemoteDescriptionSetAndFlush { candidate ->
-                    peerConnection.addIceCandidate(candidate)
+                    _peerConnection.addIceCandidate(candidate)
                 }
                 cont.resume(Unit)
             }
@@ -185,13 +164,13 @@ internal actual class NativePeerConnection actual constructor(
             candidate.candidate
         )
         iceCandidateBuffer.queueOrAdd(iceCandidate) { nativeCandidate ->
-            peerConnection.addIceCandidate(nativeCandidate)
+            _peerConnection.addIceCandidate(nativeCandidate)
         }
     }
 
     actual suspend fun getStats(): KPeerStatsReport = suspendCoroutine { cont ->
         try {
-            peerConnection.getStats(object : RTCStatsCollectorCallback {
+            _peerConnection.getStats(object : RTCStatsCollectorCallback {
                 override fun onStatsDelivered(report: RTCStatsReport) {
                     cont.resume(report.toTyped())
                 }
@@ -202,7 +181,8 @@ internal actual class NativePeerConnection actual constructor(
     }
 
     actual fun close() {
-        peerConnection.close()
+        peerConnection?.close()
+        peerConnection = null
         localIceCandidatesChannel.close()
         _connectionState.value = KPeerConnectionState.DISCONNECTED
     }
@@ -246,7 +226,7 @@ internal actual class NativePeerConnection actual constructor(
             ordered = controlParams.ordered
             controlParams.maxRetransmitsOrNull?.let { maxRetransmits = it }
         }
-        return peerConnection.createDataChannel(config.label, controlConfig)?.let { dc ->
+        return _peerConnection.createDataChannel(config.label, controlConfig)?.let { dc ->
             config.bufferedAmountLowThreshold?.let { threshold ->
                 // Not all Android WebRTC builds expose this API. Try via reflection when present.
                 runCatching {
@@ -258,6 +238,32 @@ internal actual class NativePeerConnection actual constructor(
             NativeDataChannel(dc)
         }
     }
+}
+
+private class PeerConnectionObserver(
+    private val owner: NativePeerConnection
+) : PeerConnection.Observer {
+    override fun onIceCandidate(candidate: IceCandidate?) {
+        candidate?.let { owner.onIceCandidate(it) }
+    }
+    override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
+    override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
+    override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
+        state?.let { owner.onConnectionStateChange(it) }
+    }
+    override fun onIceConnectionReceivingChange(receiving: Boolean) {}
+    override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
+        if (state == PeerConnection.IceGatheringState.COMPLETE) owner.onIceGatheringComplete()
+    }
+    override fun onAddStream(stream: MediaStream?) {}
+    override fun onRemoveStream(stream: MediaStream?) {}
+    override fun onDataChannel(channel: DataChannel?) {
+        channel?.let { owner.onDataChannel(it) }
+    }
+    override fun onRenegotiationNeeded() {
+        owner.onNegotiationNeeded()
+    }
+    override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {}
 }
 
 private fun RTCStatsReport.toTyped(): KPeerStatsReport {

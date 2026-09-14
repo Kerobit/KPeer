@@ -4,7 +4,6 @@ import com.kerobit.kpeer.KChannelConfig
 import com.kerobit.kpeer.KPeerConnectionState
 import com.kerobit.kpeer.KPeerContext
 import com.kerobit.kpeer.KPeerIceCandidate
-import com.kerobit.kpeer.KPeerSignal
 import com.kerobit.kpeer.KPeerSdpType
 import com.kerobit.kpeer.KPeerStat
 import com.kerobit.kpeer.KPeerStatValue
@@ -34,7 +33,7 @@ internal actual class NativePeerConnection actual constructor(
 
     private val rtcConfig = json("iceServers" to iceServers.toTypedArray()).unsafeCast<RTCConfigurationInit>()
 
-    private val peerConnection = RTCPeerConnection(rtcConfig)
+    private var peerConnection: RTCPeerConnection? = null
 
     private val localIceCandidatesChannel = Channel<KPeerIceCandidate>(Channel.UNLIMITED)
     actual val localIceCandidates: Flow<KPeerIceCandidate> = localIceCandidatesChannel.receiveAsFlow()
@@ -50,8 +49,14 @@ internal actual class NativePeerConnection actual constructor(
     private val _negotiationNeeded = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
     actual val negotiationNeeded: Flow<Unit> = _negotiationNeeded.asSharedFlow()
 
-    init {
-        peerConnection.onicecandidate = { event ->
+    private val _peerConnection: RTCPeerConnection
+        get() = peerConnection ?: throw IllegalStateException("PeerConnection not started")
+
+    actual fun startPeerConnection() {
+        if (peerConnection != null) return
+
+        val connection = RTCPeerConnection(rtcConfig)
+        connection.onicecandidate = { event ->
             val c = event.candidate
             if (c != null && c != undefined) {
                 localIceCandidatesChannel.trySend(
@@ -63,27 +68,30 @@ internal actual class NativePeerConnection actual constructor(
                 )
             }
         }
-        peerConnection.oniceconnectionstatechange = {
-            _connectionState.value = mapConnectionState(peerConnection.asDynamic().iceConnectionState as String)
+        connection.oniceconnectionstatechange = {
+            _connectionState.value = mapConnectionState(connection.asDynamic().iceConnectionState as String)
         }
-        peerConnection.ondatachannel = { event ->
+        connection.ondatachannel = { event ->
             val ch = event.channel as RTCDataChannel
             _incomingDataChannels.tryEmit(NativeDataChannel(ch))
         }
-        peerConnection.onnegotiationneeded = {
+        connection.onnegotiationneeded = {
             _negotiationNeeded.tryEmit(Unit)
         }
+        peerConnection = connection
     }
 
     actual suspend fun createOffer(): String {
-        val desc = peerConnection.createOffer().await()
-        peerConnection.setLocalDescription(desc).await()
+        val connection = _peerConnection
+        val desc = connection.createOffer().await()
+        connection.setLocalDescription(desc).await()
         return desc.sdp
     }
 
     actual suspend fun createAnswer(): String {
-        val desc = peerConnection.createAnswer().await()
-        peerConnection.setLocalDescription(desc).await()
+        val connection = _peerConnection
+        val desc = connection.createAnswer().await()
+        connection.setLocalDescription(desc).await()
         return desc.sdp
     }
 
@@ -97,10 +105,11 @@ internal actual class NativePeerConnection actual constructor(
             this.type = rtcType
             this.sdp = sdp
         }
-        peerConnection.setRemoteDescription(desc).await()
+        val connection = _peerConnection
+        connection.setRemoteDescription(desc).await()
         iceCandidateBuffer.markRemoteDescriptionSetAndFlush { candidate ->
             // Intentionally do not await: same as current behavior (fire-and-forget).
-            peerConnection.addIceCandidate(candidate)
+            connection.addIceCandidate(candidate)
         }
     }
 
@@ -111,12 +120,12 @@ internal actual class NativePeerConnection actual constructor(
             this.sdpMLineIndex = candidate.sdpMLineIndex ?: 0
         }
         iceCandidateBuffer.queueOrAdd(init) { buffered ->
-            peerConnection.addIceCandidate(buffered)
+            _peerConnection.addIceCandidate(buffered)
         }
     }
 
     actual suspend fun getStats(): KPeerStatsReport {
-        val report = peerConnection.getStats().await()
+        val report = _peerConnection.getStats().await()
         // RTCStatsReport is a Map-like object in browsers.
         val statsArray = js("Array.from(report.values())") as Array<dynamic>
         val stats = statsArray.mapNotNull { s ->
@@ -146,7 +155,8 @@ internal actual class NativePeerConnection actual constructor(
     }
 
     actual fun close() {
-        peerConnection.close()
+        peerConnection?.close()
+        peerConnection = null
         localIceCandidatesChannel.close()
         _connectionState.value = KPeerConnectionState.DISCONNECTED
     }
@@ -157,7 +167,7 @@ internal actual class NativePeerConnection actual constructor(
             "ordered" to controlParams.ordered,
             "maxRetransmits" to (controlParams.maxRetransmitsOrNull ?: undefined)
         ).unsafeCast<RTCDataChannelInit>()
-        val ch = peerConnection.createDataChannel(config.label, options)
+        val ch = _peerConnection.createDataChannel(config.label, options)
         config.bufferedAmountLowThreshold?.let { threshold ->
             ch.bufferedAmountLowThreshold = threshold.toInt()
         }

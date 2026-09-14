@@ -21,6 +21,8 @@ internal actual class NativePeerConnection actual constructor(
     actual val incomingDataChannels: Flow<NativeDataChannel> = emptyFlow()
     actual val negotiationNeeded: Flow<Unit> = emptyFlow()
 
+    actual fun startPeerConnection() {}
+
     actual fun createDataChannel(config: KChannelConfig): NativeDataChannel? = null
 
     actual suspend fun createOffer(): String {
