@@ -1,5 +1,6 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFramework
+import org.jetbrains.kotlin.gradle.targets.native.tasks.PodBuildTask
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -69,9 +70,9 @@ kotlin {
         homepage = "https://kerobit.com"
         version = "1.0.0"
         ios.deploymentTarget = "17.0"
-        osx.deploymentTarget = "11.0"
+        osx.deploymentTarget = "12.0"
         pod("WebRTC-SDK") {
-            version = "~> 144.7559.01"
+            version = "~> 150.7871.01"
             moduleName = "WebRTC"
         }
         framework {
@@ -110,6 +111,15 @@ kotlin {
         commonTest.dependencies {
             implementation(libs.kotlin.test)
         }
+    }
+}
+
+// Synthetic Pods retain dependency targets below the supported Apple minimums.
+tasks.withType<PodBuildTask>().configureEach {
+    if (name.contains("Ios")) {
+        xcodeBuildSettings.put("IPHONEOS_DEPLOYMENT_TARGET", "17.0")
+    } else if (name.contains("Macos")) {
+        xcodeBuildSettings.put("MACOSX_DEPLOYMENT_TARGET", "12.0")
     }
 }
 

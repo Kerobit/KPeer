@@ -15,6 +15,8 @@ It provides:
 
 ## Install
 
+Apple deployment minimums are iOS 17 and macOS 12.
+
 Current library coordinates:
 
 ```kotlin
