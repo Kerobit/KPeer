@@ -9,7 +9,7 @@ plugins {
     alias(libs.plugins.kotlin.cocoapods)
 }
 
-group = "com.kerobit"
+group = "dev.kerobit"
 version = "1.0.0"
 
 base {
@@ -25,7 +25,7 @@ kotlin {
 
     jvm()
     android {
-        namespace = "com.kerobit.kpeer"
+        namespace = "dev.kerobit.kpeer"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
 
@@ -67,7 +67,7 @@ kotlin {
     cocoapods {
         summary = "KPeer - simple WebRTC data channel peer for Kotlin Multiplatform"
         name = cocoaPodName
-        homepage = "https://kerobit.com"
+        homepage = "https://kerobit.dev"
         version = "1.0.0"
         ios.deploymentTarget = "17.0"
         osx.deploymentTarget = "12.0"

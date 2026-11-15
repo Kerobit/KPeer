@@ -1,0 +1,23 @@
+package dev.kerobit.kpeer.internal.nativeP2P
+
+import kotlinx.coroutines.flow.Flow
+
+internal expect class NativeDataChannel {
+    val incomingBytes: Flow<ByteArray>
+    val incomingText: Flow<String>
+    val state: Flow<DataChannelState>
+    val currentState: DataChannelState
+    val bufferedAmount: Flow<Long>
+    val currentBufferedAmount: Long
+    val label: String
+    fun send(data: ByteArray): Boolean
+    fun sendText(text: String): Boolean
+    fun close()
+}
+
+enum class DataChannelState {
+    CONNECTING,
+    OPEN,
+    CLOSING,
+    CLOSED
+}

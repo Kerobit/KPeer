@@ -1,7 +1,7 @@
 Pod::Spec.new do |spec|
     spec.name                     = 'KerobitKPeer'
     spec.version                  = '1.0.0'
-    spec.homepage                 = 'https://kerobit.com'
+    spec.homepage                 = 'https://kerobit.dev'
     spec.source                   = { :http=> ''}
     spec.authors                  = ''
     spec.license                  = ''

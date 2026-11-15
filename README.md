@@ -20,8 +20,13 @@ Apple deployment minimums are iOS 17 and macOS 12.
 Current library coordinates:
 
 ```kotlin
-implementation("com.kerobit:kpeer:1.0.0")
+implementation("dev.kerobit:kpeer:1.0.0")
 ```
+
+Migrating from `com.kerobit:kpeer` requires changing the dependency group and Kotlin
+imports from `com.kerobit.kpeer` to `dev.kerobit.kpeer`, then rebuilding consumers.
+The package change is not source or binary compatible. Verify ownership of the new
+Maven namespace before publishing, and publish KPeer before SDK versions that depend on it.
 
 ### KMM
 
@@ -31,7 +36,7 @@ If you are consuming `KPeer` from another Kotlin Multiplatform shared module, de
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("com.kerobit:kpeer:1.0.0")
+            implementation("dev.kerobit:kpeer:1.0.0")
         }
     }
 }
@@ -49,7 +54,7 @@ In a plain Android module:
 
 ```kotlin
 dependencies {
-    implementation("com.kerobit:kpeer:1.0.0")
+    implementation("dev.kerobit:kpeer:1.0.0")
 }
 ```
 
@@ -59,7 +64,7 @@ In KMM Android source sets, you can also depend on it explicitly from `androidMa
 kotlin {
     sourceSets {
         androidMain.dependencies {
-            implementation("com.kerobit:kpeer:1.0.0")
+            implementation("dev.kerobit:kpeer:1.0.0")
         }
     }
 }
@@ -100,7 +105,7 @@ If you consume it from another KMM/Kotlin project:
 kotlin {
     sourceSets {
         jsMain.dependencies {
-            implementation("com.kerobit:kpeer:1.0.0")
+            implementation("dev.kerobit:kpeer:1.0.0")
         }
     }
 }
@@ -420,10 +425,10 @@ channelSubscription.cancel()
 This sample shows two peers in the same process. In a real application they would live in different devices or runtimes, and you would use websockets, HTTP, or another transport to exchange signaling messages.
 
 ```kotlin
-import com.kerobit.kpeer.KChannelConfig
-import com.kerobit.kpeer.KPeer
-import com.kerobit.kpeer.KPeerConfig
-import com.kerobit.kpeer.KPeerContext
+import dev.kerobit.kpeer.KChannelConfig
+import dev.kerobit.kpeer.KPeer
+import dev.kerobit.kpeer.KPeerConfig
+import dev.kerobit.kpeer.KPeerContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob

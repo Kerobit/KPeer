@@ -17,14 +17,14 @@
   };
 
   // After webpack config change, kpeer should be on globalThis.kpeer (UMD).
-  // If you didn't rebuild yet, it may still be under globalThis['com.kerobit:library'].
-  const root = globalThis.kpeer ?? globalThis['com.kerobit:library'];
+  // If you didn't rebuild yet, it may still be under globalThis['dev.kerobit:library'].
+  const root = globalThis.kpeer ?? globalThis['dev.kerobit:library'];
   if (!root?.com?.kerobit?.kpeer?.KPeerJs) {
     log("ERROR: KPeerJs not found. Rebuild JS bundle and reload.");
     return;
   }
 
-  const { KPeerJs } = root.com.kerobit.kpeer;
+  const { KPeerJs } = root.dev.kerobit.kpeer;
 
   let a = null;
   let b = null;
